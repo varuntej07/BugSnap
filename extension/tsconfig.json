@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "types": ["chrome"],
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["shared/*"]
+    }
+  },
+  "include": [
+    "background/**/*.ts",
+    "content/**/*.ts",
+    "content/**/*.tsx",
+    "popup/**/*.ts",
+    "popup/**/*.tsx",
+    "shared/**/*.ts",
+    "vite.config.ts"
+  ]
+}

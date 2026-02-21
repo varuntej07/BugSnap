@@ -1,0 +1,19 @@
+# Node / frontend
+extension/node_modules/
+extension/dist/
+extension/.vite/
+
+# Python / backend
+server/.venv/
+server/__pycache__/
+server/.pytest_cache/
+server/*.pyc
+
+# Local/editor/system
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Accidental root npm lockfile (project has no root package.json)
+/package-lock.json
