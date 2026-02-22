@@ -4,7 +4,7 @@
   "short_name": "BugSnap",
   "version": "0.1.0",
   "description": "Capture a UI region and generate structured coding prompts using a local VLM server.",
-  "permissions": ["activeTab", "tabs", "scripting", "storage"],
+  "permissions": ["activeTab", "tabs", "storage"],
   "host_permissions": ["<all_urls>", "http://127.0.0.1:8000/*", "http://localhost:8000/*"],
   "background": {
     "service_worker": "background/service_worker.js",
@@ -20,13 +20,7 @@
         "default": "Ctrl+Shift+Y",
         "mac": "Command+Shift+Y"
       },
-      "description": "Capture the current tab and open selection overlay."
+      "description": "Capture the current tab and open Capture Studio."
     }
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["content/overlay.js", "chunks/*.js", "assets/*"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }

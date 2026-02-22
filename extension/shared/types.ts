@@ -52,7 +52,8 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
 export const STORAGE_KEYS = {
   settings: "settings",
   lastResult: "lastResult",
-  lastError: "lastError"
+  lastError: "lastError",
+  pendingCapture: "pendingCapture"
 } as const;
 
 export interface StartCaptureMessage {
@@ -60,11 +61,12 @@ export interface StartCaptureMessage {
   mode?: PromptMode;
 }
 
-export interface OpenOverlayMessage {
-  type: "OPEN_OVERLAY";
-  screenshotDataUrl: string;
-  pageUrl?: string;
+export interface PendingCapture {
+  created_at: string;
+  page_url?: string;
+  viewport: ViewportSize;
   mode: PromptMode;
+  screenshot_data_url: string;
 }
 
 export interface SaveResultMessage {
@@ -77,4 +79,7 @@ export interface CaptureFailedMessage {
   error: string;
 }
 
-export type RuntimeMessage = StartCaptureMessage | OpenOverlayMessage | SaveResultMessage | CaptureFailedMessage;
+export type RuntimeMessage =
+  | StartCaptureMessage
+  | SaveResultMessage
+  | CaptureFailedMessage;

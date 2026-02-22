@@ -1,0 +1,163 @@
+:root {
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  color: #eef4ff;
+  background: #0d1424;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at top left, #132345, #0d1424 55%);
+}
+
+.capture-shell {
+  min-height: 100vh;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.capture-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.capture-header h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.capture-header p {
+  margin: 6px 0 0;
+  max-width: 70vw;
+  color: #9eb4df;
+  font-size: 12px;
+}
+
+.capture-header__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.capture-btn {
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.capture-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.capture-btn--primary {
+  background: #00d9a3;
+  color: #03251d;
+}
+
+.capture-btn--secondary {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e6eeff;
+}
+
+.capture-btn--ghost {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: transparent;
+  color: #e6eeff;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.capture-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.capture-controls label {
+  color: #b8c9eb;
+  font-size: 12px;
+}
+
+.capture-controls select,
+.capture-result textarea {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(10, 15, 27, 0.7);
+  color: #f4f8ff;
+  font: inherit;
+  padding: 8px 10px;
+}
+
+.capture-stage {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(9, 14, 24, 0.74);
+  padding: 10px;
+  overflow: auto;
+}
+
+.capture-image-wrap {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
+  cursor: crosshair;
+}
+
+.capture-image {
+  display: block;
+  max-width: min(1400px, calc(100vw - 72px));
+  height: auto;
+  user-select: none;
+}
+
+.capture-selection {
+  position: absolute;
+  border: 2px solid #00d9a3;
+  background: rgba(0, 217, 163, 0.14);
+  pointer-events: none;
+}
+
+.capture-empty {
+  padding: 16px;
+  color: #9eb4df;
+}
+
+.capture-status {
+  font-size: 13px;
+  color: #9bffd9;
+}
+
+.capture-error {
+  font-size: 13px;
+  color: #ffb8b8;
+}
+
+.capture-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.capture-result__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.capture-result textarea {
+  resize: vertical;
+  min-height: 220px;
+  line-height: 1.35;
+}

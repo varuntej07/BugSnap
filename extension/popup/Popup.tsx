@@ -117,7 +117,7 @@ export function Popup() {
         throw new Error(response?.error || "Failed to start capture.");
       }
 
-      setStatus("Capture started. Draw a selection on the page.");
+      setStatus("Capture started. Use the Capture Studio tab to select and analyze.");
       window.close();
     } catch (captureError) {
       const message = captureError instanceof Error ? captureError.message : "Could not start capture.";

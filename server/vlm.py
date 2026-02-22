@@ -1,14 +1,50 @@
 from __future__ import annotations
 
+import importlib.util
 import logging
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 import torch
 from PIL import Image
 from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import __version__ as transformers_version
 
-LOGGER = logging.getLogger("snapprompt.vlm")
+LOGGER = logging.getLogger("bugsnap.vlm")
+FLORENCE_REQUIRED_PACKAGES: tuple[str, ...] = ("einops", "timm")
+REQUIREMENTS_PATH = Path(__file__).with_name("requirements.txt")
+
+
+class BackendDependencyError(RuntimeError):
+    """Raised when required backend dependencies are not available."""
+
+
+def _missing_packages(packages: tuple[str, ...]) -> list[str]:
+    return [package for package in packages if importlib.util.find_spec(package) is None]
+
+
+def _missing_packages_message(missing: list[str]) -> str:
+    missing_joined = ", ".join(missing)
+    install_missing = f'"{sys.executable}" -m pip install {" ".join(missing)}'
+    install_all = f'"{sys.executable}" -m pip install -r "{REQUIREMENTS_PATH}"'
+    return (
+        f"Missing Florence-2 dependency package(s): {missing_joined}. "
+        f"Server interpreter: {sys.executable}\n"
+        f"Install missing packages with:\n  {install_missing}\n"
+        f"Or install all server dependencies with:\n  {install_all}"
+    )
+
+
+def _validate_transformers_version() -> None:
+    major = int(transformers_version.split(".", 1)[0])
+    if major >= 5:
+        raise BackendDependencyError(
+            "Florence-2 backend is incompatible with transformers>=5 in this server setup. "
+            f"Detected transformers=={transformers_version}. "
+            f'Install a 4.x release with: "{sys.executable}" -m pip install "transformers>=4.44,<5.0"'
+        )
 
 
 class VisionLanguageBackend(Protocol):
@@ -27,6 +63,12 @@ class InferenceConfig:
 
 class Florence2Backend:
     def __init__(self, model_name: str, max_new_tokens: int) -> None:
+        _validate_transformers_version()
+
+        missing = _missing_packages(FLORENCE_REQUIRED_PACKAGES)
+        if missing:
+            raise BackendDependencyError(_missing_packages_message(missing))
+
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         self.task_prompt = "<MORE_DETAILED_CAPTION>"
@@ -103,6 +145,10 @@ def load_backend(config: InferenceConfig) -> VisionLanguageBackend:
 
     try:
         return Florence2Backend(model_name=config.model_name, max_new_tokens=config.max_new_tokens)
+    except BackendDependencyError as error:
+        LOGGER.error("%s", error)
+        LOGGER.warning("Failed to load Florence-2 backend. Falling back to heuristic descriptor.")
+        return FallbackHeuristicBackend()
     except Exception:
         LOGGER.exception("Failed to load Florence-2 backend. Falling back to heuristic descriptor.")
         return FallbackHeuristicBackend()

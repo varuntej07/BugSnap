@@ -15,8 +15,8 @@
   },
   "include": [
     "background/**/*.ts",
-    "content/**/*.ts",
-    "content/**/*.tsx",
+    "capture/**/*.ts",
+    "capture/**/*.tsx",
     "popup/**/*.ts",
     "popup/**/*.tsx",
     "shared/**/*.ts",

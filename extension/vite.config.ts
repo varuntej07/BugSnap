@@ -16,8 +16,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         popup: resolve(__dirname, "popup/index.html"),
+        capture: resolve(__dirname, "capture/index.html"),
         "background/service_worker": resolve(__dirname, "background/service_worker.ts"),
-        "content/overlay": resolve(__dirname, "content/overlay.tsx")
       },
       output: {
         entryFileNames: "[name].js",

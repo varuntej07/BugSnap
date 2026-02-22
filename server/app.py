@@ -19,31 +19,46 @@ from starlette.concurrency import run_in_threadpool
 from prompt_builder import build_prompts
 from vlm import InferenceConfig, VisionLanguageBackend, load_backend
 
-LOGGER = logging.getLogger("snapprompt.server")
-logging.basicConfig(level=os.getenv("SNAPPROMPT_LOG_LEVEL", "INFO"))
+LOGGER = logging.getLogger("bugsnap.server")
 
 PromptMode = Literal["ui_bug_fix", "ui_polish", "implement_like_this"]
 ElementType = Literal["button", "input", "modal", "nav", "card", "table", "text"]
 
 
-def env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
+def env_value(primary_name: str, legacy_name: str | None = None) -> str | None:
+    raw = os.getenv(primary_name)
+    if raw is not None:
+        return raw
+    if legacy_name is not None:
+        return os.getenv(legacy_name)
+    return None
+
+
+def env_int(primary_name: str, default: int, legacy_name: str | None = None) -> int:
+    raw = env_value(primary_name, legacy_name)
     if raw is None:
         return default
     try:
         return int(raw)
     except ValueError:
-        LOGGER.warning("Invalid integer env '%s'=%r, falling back to %s", name, raw, default)
+        LOGGER.warning(
+            "Invalid integer env '%s'=%r, falling back to %s",
+            primary_name,
+            raw,
+            default,
+        )
         return default
 
 
-MAX_REQUEST_MB = env_int("SNAPPROMPT_MAX_REQUEST_MB", 6)
+logging.basicConfig(level=env_value("BUGSNAP_LOG_LEVEL", "SNAPPROMPT_LOG_LEVEL") or "INFO")
+
+MAX_REQUEST_MB = env_int("BUGSNAP_MAX_REQUEST_MB", 6, "SNAPPROMPT_MAX_REQUEST_MB")
 MAX_REQUEST_BYTES = MAX_REQUEST_MB * 1024 * 1024
-MAX_IMAGE_MB = env_int("SNAPPROMPT_MAX_IMAGE_MB", 5)
+MAX_IMAGE_MB = env_int("BUGSNAP_MAX_IMAGE_MB", 5, "SNAPPROMPT_MAX_IMAGE_MB")
 MAX_IMAGE_BYTES = MAX_IMAGE_MB * 1024 * 1024
-RATE_LIMIT_PER_MINUTE = env_int("SNAPPROMPT_RATE_LIMIT_PER_MINUTE", 12)
+RATE_LIMIT_PER_MINUTE = env_int("BUGSNAP_RATE_LIMIT_PER_MINUTE", 12, "SNAPPROMPT_RATE_LIMIT_PER_MINUTE")
 RATE_LIMIT_WINDOW_SECONDS = 60
-Image.MAX_IMAGE_PIXELS = env_int("SNAPPROMPT_MAX_IMAGE_PIXELS", 40_000_000)
+Image.MAX_IMAGE_PIXELS = env_int("BUGSNAP_MAX_IMAGE_PIXELS", 40_000_000, "SNAPPROMPT_MAX_IMAGE_PIXELS")
 
 
 class DetectedElementModel(BaseModel):
@@ -108,7 +123,7 @@ def image_from_bytes(payload: bytes) -> Image.Image:
 
 
 app = FastAPI(
-    title="SnapPrompt Local VLM Server",
+    title="BugSnap Local VLM Server",
     version="0.1.0",
     description="Describes selected UI screenshot regions and generates structured prompts for coding agents.",
 )
@@ -120,9 +135,9 @@ rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_PER_MINUTE, RATE_LIMIT_WINDOW
 @app.on_event("startup")
 async def startup_event() -> None:
     config = InferenceConfig(
-        backend=os.getenv("SNAPPROMPT_VLM_BACKEND", "florence2"),
-        model_name=os.getenv("SNAPPROMPT_VLM_MODEL", "microsoft/Florence-2-base"),
-        max_new_tokens=env_int("SNAPPROMPT_MAX_NEW_TOKENS", 200),
+        backend=env_value("BUGSNAP_VLM_BACKEND", "SNAPPROMPT_VLM_BACKEND") or "florence2",
+        model_name=env_value("BUGSNAP_VLM_MODEL", "SNAPPROMPT_VLM_MODEL") or "microsoft/Florence-2-base",
+        max_new_tokens=env_int("BUGSNAP_MAX_NEW_TOKENS", 200, "SNAPPROMPT_MAX_NEW_TOKENS"),
     )
     app.state.vlm_backend = load_backend(config)
     LOGGER.info("Loaded backend: %s", app.state.vlm_backend.model_name)
