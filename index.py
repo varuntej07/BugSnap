@@ -9,7 +9,7 @@ import os
 import sys
 
 # Make server/ modules importable (app.py, vlm.py, prompt_builder.py)
-_server_dir = os.path.join(os.path.dirname(__file__), "..", "server")
+_server_dir = os.path.join(os.path.dirname(__file__), "server")
 if _server_dir not in sys.path:
     sys.path.insert(0, _server_dir)
 
