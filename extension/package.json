@@ -1,12 +1,15 @@
 {
   "name": "bugsnap-extension",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/check-manifest-preflight.mjs",
+    "test:dist": "npm run build && node scripts/check-dist-package.mjs",
+    "preflight": "npm run test && npm run test:dist"
   },
   "dependencies": {
     "react": "^18.3.1",

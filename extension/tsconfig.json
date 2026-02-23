@@ -7,6 +7,7 @@
     "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
+    "skipLibCheck": true,
     "types": ["chrome"],
     "baseUrl": ".",
     "paths": {
@@ -17,9 +18,9 @@
     "background/**/*.ts",
     "capture/**/*.ts",
     "capture/**/*.tsx",
+    "content/**/*.ts",
     "popup/**/*.ts",
     "popup/**/*.tsx",
-    "shared/**/*.ts",
-    "vite.config.ts"
+    "shared/**/*.ts"
   ]
 }

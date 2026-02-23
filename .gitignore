@@ -9,6 +9,11 @@ server/__pycache__/
 server/.pytest_cache/
 server/*.pyc
 
+# Environment secrets
+.env
+.env.local
+.env.*.local
+
 # Local/editor/system
 .vscode/
 .idea/

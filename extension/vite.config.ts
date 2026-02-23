@@ -18,6 +18,7 @@ export default defineConfig({
         popup: resolve(__dirname, "popup/index.html"),
         capture: resolve(__dirname, "capture/index.html"),
         "background/service_worker": resolve(__dirname, "background/service_worker.ts"),
+        "content/overlay": resolve(__dirname, "content/overlay.ts"),
       },
       output: {
         entryFileNames: "[name].js",

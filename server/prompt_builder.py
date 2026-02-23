@@ -289,6 +289,47 @@ Expected Output From Coding Agent
     return trim_to_max_words(details, 1200)
 
 
+LOW_QUALITY_SIGNALS = [
+    "unable to",
+    "cannot determine",
+    "no visible",
+    "image is blank",
+    "cannot analyze",
+    "i'm sorry",
+    "i cannot",
+]
+
+MINIMUM_SUMMARY_WORD_COUNT = 8
+MINIMUM_PROMPT_WORD_COUNT = 50
+
+
+def is_low_quality_caption(caption: str) -> bool:
+    if not caption or not caption.strip():
+        return True
+    if word_count(caption) < MINIMUM_SUMMARY_WORD_COUNT:
+        return True
+    lowered = caption.lower()
+    return any(signal in lowered for signal in LOW_QUALITY_SIGNALS)
+
+
+def enrich_weak_summary(summary: str, viewport_width: int, viewport_height: int) -> str:
+    base = summary.strip() if summary.strip() else "A UI region was captured for analysis."
+    enrichment = (
+        f" The captured area is from a {viewport_width}x{viewport_height} viewport. "
+        "Inspect the region for common layout issues: alignment inconsistencies between sibling elements, "
+        "spacing irregularities in padding or margins, text overflow or truncation, "
+        "and z-index stacking conflicts. Check for button/input sizing consistency and "
+        "typography hierarchy (heading vs body text scale)."
+    )
+    return base + enrichment
+
+
+def validate_prompt_quality(prompt: str, min_words: int = MINIMUM_PROMPT_WORD_COUNT) -> bool:
+    if not prompt or not prompt.strip():
+        return False
+    return word_count(prompt) >= min_words
+
+
 def build_prompts(
     mode: PromptMode,
     page_url: str | None,
@@ -296,7 +337,12 @@ def build_prompts(
     viewport_height: int,
     caption: str,
 ) -> tuple[str, str, str, list[DetectedElement], list[str]]:
+    low_quality = is_low_quality_caption(caption)
     summary = summarize_caption(caption)
+
+    if low_quality:
+        summary = enrich_weak_summary(summary, viewport_width, viewport_height)
+
     elements = detect_elements(summary)
     issues = infer_issues(summary, elements)
 
@@ -318,5 +364,27 @@ def build_prompts(
         elements=elements,
         issues=issues,
     )
+
+    if not validate_prompt_quality(prompt_short):
+        prompt_short = build_short_prompt(
+            mode=mode,
+            page_url=page_url,
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+            summary=enrich_weak_summary("", viewport_width, viewport_height),
+            elements=elements,
+            issues=issues,
+        )
+
+    if not validate_prompt_quality(prompt_verbose):
+        prompt_verbose = build_verbose_prompt(
+            mode=mode,
+            page_url=page_url,
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+            summary=enrich_weak_summary("", viewport_width, viewport_height),
+            elements=elements,
+            issues=issues,
+        )
 
     return summary, prompt_short, prompt_verbose, elements, issues

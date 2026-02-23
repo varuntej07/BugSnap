@@ -1,4 +1,4 @@
-import type { DescribeResponse, PromptMode, ViewportSize } from "./types";
+import type { BugSnapError, BugSnapErrorCode, DescribeResponse, PromptMode, ViewportSize } from "./types";
 
 interface DescribeSelectionRequest {
   image: Blob;
@@ -6,13 +6,38 @@ interface DescribeSelectionRequest {
   viewport: ViewportSize;
   mode: PromptMode;
   serverUrl?: string;
+  authToken?: string;
   timeoutMs?: number;
 }
 
+export class BugSnapApiError extends Error {
+  public readonly errorCode: BugSnapErrorCode;
+  public readonly userMessage: string;
+  public readonly devMessage: string;
+  public readonly requestId: string;
+  public readonly retryable: boolean;
+
+  constructor(error: BugSnapError) {
+    super(error.user_message);
+    this.name = "BugSnapApiError";
+    this.errorCode = error.error_code;
+    this.userMessage = error.user_message;
+    this.devMessage = error.dev_message;
+    this.requestId = error.request_id;
+    this.retryable = error.retryable;
+  }
+}
+
 function normalizeServerUrl(rawUrl?: string): string {
-  const fallback = "http://127.0.0.1:8000";
+  const fallback = "https://bugsnap.vercel.app";
   const value = (rawUrl ?? fallback).trim();
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function isStructuredError(payload: unknown): payload is BugSnapError {
+  if (!payload || typeof payload !== "object") return false;
+  const data = payload as Record<string, unknown>;
+  return data.ok === false && typeof data.error_code === "string" && typeof data.user_message === "string";
 }
 
 function assertDescribeResponse(payload: unknown): DescribeResponse {
@@ -35,6 +60,45 @@ function assertDescribeResponse(payload: unknown): DescribeResponse {
   return data;
 }
 
+function makeLocalError(
+  errorCode: BugSnapErrorCode,
+  userMessage: string,
+  devMessage: string,
+  retryable: boolean
+): BugSnapApiError {
+  return new BugSnapApiError({
+    ok: false,
+    error_code: errorCode,
+    user_message: userMessage,
+    dev_message: devMessage,
+    request_id: `local_${Date.now().toString(36)}`,
+    retryable,
+  });
+}
+
+export async function checkHealth(serverUrl?: string, authToken?: string): Promise<{ ok: boolean; backend: string; degraded: boolean }> {
+  const endpoint = `${normalizeServerUrl(serverUrl)}/health`;
+  const headers: Record<string, string> = {};
+  if (authToken) {
+    headers["Authorization"] = `Bearer ${authToken}`;
+  }
+
+  try {
+    const response = await fetch(endpoint, { headers });
+    if (!response.ok) {
+      return { ok: false, backend: "unknown", degraded: true };
+    }
+    const data = (await response.json()) as Record<string, unknown>;
+    return {
+      ok: true,
+      backend: (data.backend as string) ?? "unknown",
+      degraded: (data.degraded as boolean) ?? false,
+    };
+  } catch {
+    return { ok: false, backend: "unreachable", degraded: true };
+  }
+}
+
 export async function describeSelection(request: DescribeSelectionRequest): Promise<DescribeResponse> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), request.timeoutMs ?? 90_000);
@@ -50,25 +114,85 @@ export async function describeSelection(request: DescribeSelectionRequest): Prom
     formData.append("page_url", request.pageUrl);
   }
 
+  const headers: Record<string, string> = {};
+  if (request.authToken) {
+    headers["Authorization"] = `Bearer ${request.authToken}`;
+  }
+
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       body: formData,
-      signal: controller.signal
+      signal: controller.signal,
+      headers,
     });
 
     if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Server error (${response.status}): ${errorBody || "No response body."}`);
+      let errorBody: unknown;
+      try {
+        errorBody = await response.json();
+      } catch {
+        const textBody = await response.text().catch(() => "");
+        throw makeLocalError(
+          "UNEXPECTED_INTERNAL_ERROR",
+          `Server error (${response.status}). Please try again.`,
+          `Non-JSON response: ${textBody || "empty body"}`,
+          response.status >= 500
+        );
+      }
+
+      if (isStructuredError(errorBody)) {
+        throw new BugSnapApiError(errorBody);
+      }
+
+      const detail = (errorBody as Record<string, unknown>)?.detail;
+      if (detail && typeof detail === "object" && isStructuredError(detail)) {
+        throw new BugSnapApiError(detail);
+      }
+
+      throw makeLocalError(
+        response.status === 429 ? "RATE_LIMITED" :
+        response.status === 413 ? "PAYLOAD_TOO_LARGE" :
+        response.status === 401 || response.status === 403 ? "AUTH_REQUIRED" :
+        response.status >= 500 ? "MODEL_PROVIDER_ERROR" :
+        "UNEXPECTED_INTERNAL_ERROR",
+        response.status === 429 ? "Too many requests. Wait a moment and try again." :
+        response.status === 413 ? "Image is too large. Try a smaller selection." :
+        response.status === 401 || response.status === 403 ? "Authentication failed. Check your settings." :
+        `Server error (${response.status}). Please try again.`,
+        `HTTP ${response.status}: ${JSON.stringify(errorBody)}`,
+        response.status >= 500 || response.status === 429
+      );
     }
 
     const payload = (await response.json()) as unknown;
     return assertDescribeResponse(payload);
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("Request timed out while waiting for local inference server.");
+    if (error instanceof BugSnapApiError) {
+      throw error;
     }
-    throw error;
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw makeLocalError(
+        "REQUEST_TIMEOUT",
+        "Analysis timed out. Try selecting a smaller area or check your connection.",
+        "Fetch aborted due to timeout.",
+        true,
+      );
+    }
+    if (error instanceof TypeError && error.message.includes("fetch")) {
+      throw makeLocalError(
+        "SERVER_UNREACHABLE",
+        "Could not reach BugSnap server. Check your connection and server URL.",
+        `fetch error: ${error.message}`,
+        true,
+      );
+    }
+    throw makeLocalError(
+      "SERVER_UNREACHABLE",
+      "Could not reach BugSnap server. Check your connection and server URL.",
+      error instanceof Error ? error.message : String(error),
+      true,
+    );
   } finally {
     clearTimeout(timeout);
   }

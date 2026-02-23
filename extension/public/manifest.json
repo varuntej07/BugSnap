@@ -2,15 +2,29 @@
   "manifest_version": 3,
   "name": "BugSnap",
   "short_name": "BugSnap",
-  "version": "0.1.0",
-  "description": "Capture a UI region and generate structured coding prompts using a local VLM server.",
-  "permissions": ["activeTab", "tabs", "storage"],
-  "host_permissions": ["<all_urls>", "http://127.0.0.1:8000/*", "http://localhost:8000/*"],
+  "version": "0.2.0",
+  "description": "Capture a UI region and generate structured coding prompts to fix bugs faster.",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": [
+    "https://*.vercel.app/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "background": {
     "service_worker": "background/service_worker.js",
     "type": "module"
   },
   "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    },
     "default_title": "BugSnap",
     "default_popup": "popup/index.html"
   },
@@ -20,7 +34,7 @@
         "default": "Ctrl+Shift+Y",
         "mac": "Command+Shift+Y"
       },
-      "description": "Capture the current tab and open Capture Studio."
+      "description": "Capture the current tab and select a region to analyze."
     }
   }
 }

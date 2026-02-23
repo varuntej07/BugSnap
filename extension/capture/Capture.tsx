@@ -1,6 +1,6 @@
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { cropBase64ToPngBlob, scaleRectToImage } from "@shared/imageCrop";
-import { describeSelection } from "@shared/httpClient";
+import { describeSelection, BugSnapApiError } from "@shared/httpClient";
 import { buildStructuredPrompt } from "@shared/promptTemplates";
 import {
   DEFAULT_SETTINGS,
@@ -62,6 +62,7 @@ export function Capture() {
   const [pendingCapture, setPendingCapture] = useState<PendingCapture | null>(null);
   const [status, setStatus] = useState("Loading capture...");
   const [error, setError] = useState("");
+  const [errorRetryable, setErrorRetryable] = useState(false);
   const [dragStart, setDragStart] = useState<Point | null>(null);
   const [dragPoint, setDragPoint] = useState<Point | null>(null);
   const [selectionRect, setSelectionRect] = useState<CropRect | null>(null);
@@ -109,6 +110,10 @@ export function Capture() {
     }
     return settings.verbosity === "short" ? result.response.prompt_short : result.response.prompt_verbose;
   }, [result, settings.verbosity]);
+
+  const promptValid = useMemo(() => {
+    return visiblePrompt.trim().length > 0 && visiblePrompt.split(/\s+/).length >= 10;
+  }, [visiblePrompt]);
 
   function updateImageMetrics(): void {
     const image = imageRef.current;
@@ -168,6 +173,7 @@ export function Capture() {
     }
 
     setError("");
+    setErrorRetryable(false);
     setStatus("Release mouse to lock selection.");
     setDragStart(point);
     setDragPoint(point);
@@ -219,7 +225,7 @@ export function Capture() {
   }
 
   async function copyPrompt(): Promise<void> {
-    if (!visiblePrompt) {
+    if (!visiblePrompt || !promptValid) {
       return;
     }
     try {
@@ -239,6 +245,7 @@ export function Capture() {
     }
 
     setError("");
+    setErrorRetryable(false);
     setStatus("Analyzing selection...");
     setIsAnalyzing(true);
 
@@ -252,7 +259,8 @@ export function Capture() {
         pageUrl: pendingCapture.page_url,
         viewport,
         mode: pendingCapture.mode,
-        serverUrl: settings.serverUrl
+        serverUrl: settings.serverUrl,
+        authToken: settings.authToken || undefined,
       });
 
       const fallbackPrompt = buildStructuredPrompt({
@@ -288,14 +296,24 @@ export function Capture() {
       }
 
       setResult(persistedResult);
-      setStatus("Prompt generated. Copy it from below.");
+      setStatus(
+        response.degraded
+          ? "Prompt generated (degraded mode - quality may be reduced). Copy it from below."
+          : "Prompt generated. Copy it from below."
+      );
     } catch (captureError) {
-      const text = captureError instanceof Error ? captureError.message : "Failed to analyze selection.";
-      setError(text);
-      setStatus("Analysis failed.");
+      if (captureError instanceof BugSnapApiError) {
+        setError(captureError.userMessage);
+        setErrorRetryable(captureError.retryable);
+        setStatus(`Analysis failed (${captureError.errorCode}).`);
+      } else {
+        const text = captureError instanceof Error ? captureError.message : "Failed to analyze selection.";
+        setError(text);
+        setStatus("Analysis failed.");
+      }
       await chrome.runtime.sendMessage({
         type: "CAPTURE_FAILED",
-        error: text
+        error: error
       } satisfies RuntimeMessage);
     } finally {
       setIsAnalyzing(false);
@@ -344,7 +362,21 @@ export function Capture() {
       </section>
 
       {status ? <div className="capture-status">{status}</div> : null}
-      {error ? <div className="capture-error">{error}</div> : null}
+      {error ? (
+        <div className="capture-error">
+          <span>{error}</span>
+          {errorRetryable && selectionRect ? (
+            <button
+              type="button"
+              className="capture-btn capture-btn--retry"
+              onClick={() => void analyzeSelection()}
+              disabled={isAnalyzing}
+            >
+              Retry
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <section className="capture-stage">
         {pendingCapture ? (
@@ -383,12 +415,27 @@ export function Capture() {
       <section className="capture-result">
         <div className="capture-result__header">
           <strong>Generated Prompt</strong>
-          <button type="button" className="capture-btn capture-btn--ghost" disabled={!visiblePrompt} onClick={() => void copyPrompt()}>
+          <button
+            type="button"
+            className="capture-btn capture-btn--ghost"
+            disabled={!promptValid}
+            onClick={() => void copyPrompt()}
+            title={!promptValid ? "No valid prompt to copy" : "Copy prompt to clipboard"}
+          >
             {copyState || "Copy"}
           </button>
         </div>
         <textarea readOnly rows={14} value={visiblePrompt} placeholder="Analyze a selected region to generate prompt output." />
+        {visiblePrompt && !promptValid ? (
+          <div className="capture-quality-warning">
+            Prompt quality is too low. Try capturing a larger or more distinct region.
+          </div>
+        ) : null}
       </section>
+
+      {result?.response.request_id ? (
+        <div className="capture-request-id">Request ID: {result.response.request_id}</div>
+      ) : null}
     </main>
   );
 }

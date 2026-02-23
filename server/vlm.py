@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
+import io
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-import torch
 from PIL import Image
-from transformers import AutoModelForCausalLM, AutoProcessor
-from transformers import __version__ as transformers_version
 
 LOGGER = logging.getLogger("bugsnap.vlm")
 FLORENCE_REQUIRED_PACKAGES: tuple[str, ...] = ("einops", "timm")
@@ -38,6 +38,8 @@ def _missing_packages_message(missing: list[str]) -> str:
 
 
 def _validate_transformers_version() -> None:
+    from transformers import __version__ as transformers_version
+
     major = int(transformers_version.split(".", 1)[0])
     if major >= 5:
         raise BackendDependencyError(
@@ -49,6 +51,7 @@ def _validate_transformers_version() -> None:
 
 class VisionLanguageBackend(Protocol):
     model_name: str
+    degraded: bool
 
     def describe(self, image: Image.Image) -> str:
         ...
@@ -59,15 +62,22 @@ class InferenceConfig:
     backend: str = "florence2"
     model_name: str = "microsoft/Florence-2-base"
     max_new_tokens: int = 200
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o"
 
 
 class Florence2Backend:
+    degraded = False
+
     def __init__(self, model_name: str, max_new_tokens: int) -> None:
         _validate_transformers_version()
 
         missing = _missing_packages(FLORENCE_REQUIRED_PACKAGES)
         if missing:
             raise BackendDependencyError(_missing_packages_message(missing))
+
+        import torch
+        from transformers import AutoModelForCausalLM, AutoProcessor
 
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
@@ -84,25 +94,26 @@ class Florence2Backend:
             torch_dtype=self.dtype,
         ).to(self.device)
         self.model.eval()
+        self._torch = torch
 
-    @torch.inference_mode()
     def describe(self, image: Image.Image) -> str:
         image_rgb = image.convert("RGB")
         inputs = self.processor(text=self.task_prompt, images=image_rgb, return_tensors="pt")
         inputs = {key: value.to(self.device) for key, value in inputs.items()}
 
-        generation_inputs: dict[str, torch.Tensor] = {}
+        generation_inputs: dict = {}
         for key in ("input_ids", "attention_mask", "pixel_values"):
             value = inputs.get(key)
             if value is not None:
                 generation_inputs[key] = value
 
-        generated_ids = self.model.generate(
-            **generation_inputs,
-            max_new_tokens=self.max_new_tokens,
-            num_beams=3,
-            do_sample=False,
-        )
+        with self._torch.inference_mode():
+            generated_ids = self.model.generate(
+                **generation_inputs,
+                max_new_tokens=self.max_new_tokens,
+                num_beams=3,
+                do_sample=False,
+            )
         generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
 
         try:
@@ -115,7 +126,7 @@ class Florence2Backend:
                 caption = parsed.get(self.task_prompt)
                 if isinstance(caption, str) and caption.strip():
                     return caption.strip()
-        except Exception:  # pragma: no cover - parser support varies by model revision.
+        except Exception:
             LOGGER.exception("Florence-2 post-processing failed; using raw decoded text.")
 
         return (
@@ -126,8 +137,74 @@ class Florence2Backend:
         )
 
 
+class OpenAIVisionBackend:
+    degraded = False
+
+    def __init__(self, api_key: str, model: str = "gpt-4o") -> None:
+        self.model_name = model
+        self._api_key = api_key
+
+        try:
+            from openai import OpenAI
+            self._client = OpenAI(api_key=api_key)
+            LOGGER.info("OpenAI Vision backend initialized with model '%s'", model)
+        except ImportError:
+            raise BackendDependencyError(
+                "openai package is required for the OpenAI Vision backend. "
+                f'Install with: "{sys.executable}" -m pip install openai'
+            )
+
+    def describe(self, image: Image.Image) -> str:
+        image_rgb = image.convert("RGB")
+
+        buffer = io.BytesIO()
+        image_rgb.save(buffer, format="PNG")
+        b64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        response = self._client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a UI analysis expert. Describe the visible UI elements, "
+                        "layout structure, and any potential visual issues in this screenshot region. "
+                        "Focus on: element types (buttons, inputs, text, navigation, cards, modals, tables), "
+                        "alignment issues, spacing problems, overflow/clipping, typography inconsistencies, "
+                        "and z-index/layering conflicts. Be specific and concise."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Analyze this UI screenshot region. Describe what you see including layout, elements, and any visual bugs or issues.",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64_image}",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                },
+            ],
+            max_tokens=500,
+            temperature=0.1,
+        )
+
+        content = response.choices[0].message.content
+        if not content or not content.strip():
+            LOGGER.warning("OpenAI returned empty caption")
+            return "UI region with visible elements. Detailed analysis unavailable."
+        return content.strip()
+
+
 class FallbackHeuristicBackend:
     model_name = "fallback-heuristic"
+    degraded = True
 
     def describe(self, image: Image.Image) -> str:
         width, height = image.size
@@ -140,15 +217,31 @@ class FallbackHeuristicBackend:
 def load_backend(config: InferenceConfig) -> VisionLanguageBackend:
     backend_name = config.backend.strip().lower()
 
-    if backend_name != "florence2":
-        raise ValueError(f"Unsupported backend '{config.backend}'. Use 'florence2'.")
+    if backend_name == "openai":
+        api_key = config.openai_api_key or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            LOGGER.error("OPENAI_API_KEY is required for OpenAI Vision backend.")
+            LOGGER.warning("Falling back to heuristic descriptor.")
+            return FallbackHeuristicBackend()
+        try:
+            return OpenAIVisionBackend(api_key=api_key, model=config.openai_model)
+        except BackendDependencyError as error:
+            LOGGER.error("%s", error)
+            LOGGER.warning("Failed to load OpenAI backend. Falling back to heuristic descriptor.")
+            return FallbackHeuristicBackend()
+        except Exception:
+            LOGGER.exception("Failed to load OpenAI backend. Falling back to heuristic descriptor.")
+            return FallbackHeuristicBackend()
 
-    try:
-        return Florence2Backend(model_name=config.model_name, max_new_tokens=config.max_new_tokens)
-    except BackendDependencyError as error:
-        LOGGER.error("%s", error)
-        LOGGER.warning("Failed to load Florence-2 backend. Falling back to heuristic descriptor.")
-        return FallbackHeuristicBackend()
-    except Exception:
-        LOGGER.exception("Failed to load Florence-2 backend. Falling back to heuristic descriptor.")
-        return FallbackHeuristicBackend()
+    if backend_name == "florence2":
+        try:
+            return Florence2Backend(model_name=config.model_name, max_new_tokens=config.max_new_tokens)
+        except BackendDependencyError as error:
+            LOGGER.error("%s", error)
+            LOGGER.warning("Failed to load Florence-2 backend. Falling back to heuristic descriptor.")
+            return FallbackHeuristicBackend()
+        except Exception:
+            LOGGER.exception("Failed to load Florence-2 backend. Falling back to heuristic descriptor.")
+            return FallbackHeuristicBackend()
+
+    raise ValueError(f"Unsupported backend '{config.backend}'. Use 'florence2' or 'openai'.")

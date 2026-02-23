@@ -64,6 +64,10 @@ body {
   color: #03251d;
 }
 
+.capture-btn--primary:hover:not(:disabled) {
+  background: #00f0b5;
+}
+
 .capture-btn--secondary {
   border: 1px solid rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.08);
@@ -76,6 +80,24 @@ body {
   color: #e6eeff;
   padding: 6px 10px;
   font-size: 12px;
+}
+
+.capture-btn--ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.capture-btn--retry {
+  background: rgba(255, 179, 179, 0.15);
+  border: 1px solid rgba(255, 179, 179, 0.3);
+  color: #ffb3b3;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 8px;
+}
+
+.capture-btn--retry:hover:not(:disabled) {
+  background: rgba(255, 179, 179, 0.25);
 }
 
 .capture-controls {
@@ -142,6 +164,24 @@ body {
 .capture-error {
   font-size: 13px;
   color: #ffb8b8;
+  background: rgba(255, 100, 100, 0.08);
+  border: 1px solid rgba(255, 100, 100, 0.15);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  line-height: 1.4;
+}
+
+.capture-quality-warning {
+  font-size: 11px;
+  color: #ffcf70;
+  background: rgba(255, 179, 0, 0.08);
+  border: 1px solid rgba(255, 179, 0, 0.15);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-top: 4px;
 }
 
 .capture-result {
@@ -160,4 +200,11 @@ body {
   resize: vertical;
   min-height: 220px;
   line-height: 1.35;
+}
+
+.capture-request-id {
+  font-family: monospace;
+  font-size: 10px;
+  color: #5a6d8f;
+  text-align: right;
 }
