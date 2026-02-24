@@ -18,7 +18,8 @@ interface Rect {
 }
 
 const OVERLAY_ID = "bugsnap-capture-overlay";
-const MIN_SELECTION_PX = 12;
+const MIN_SELECTION_PX = 3; // Only reject accidental clicks, not small selections
+const OVERLAY_TIMEOUT_MS = 90_000; // Auto-close after 90s if no response
 const LOG_PREFIX = "[BugSnap:Overlay]";
 
 function clamp(value: number, min: number, max: number): number {
@@ -54,7 +55,7 @@ function handleKeyDown(e: KeyboardEvent): void {
 }
 
 function injectOverlay(): void {
-  // Remove any stale overlay first (e.g. from a previous failed attempt)
+  // Always remove stale overlay first
   const existing = document.getElementById(OVERLAY_ID);
   if (existing) {
     console.log(LOG_PREFIX, "Removing stale overlay before re-injection");
@@ -95,7 +96,6 @@ function injectOverlay(): void {
     Object.assign(el.style, dimStyle);
   });
 
-  // Initial state: full dim
   Object.assign(dimTop.style, { top: "0", left: "0", width: "100%", height: "100%" });
   Object.assign(dimBottom.style, { top: "100%", left: "0", width: "100%", height: "0" });
   Object.assign(dimLeft.style, { top: "0", left: "0", width: "0", height: "0" });
@@ -136,6 +136,7 @@ function injectOverlay(): void {
 
   // --- Instruction banner ---
   const banner = document.createElement("div");
+  banner.setAttribute("data-role", "banner");
   Object.assign(banner.style, {
     position: "absolute",
     top: "16px",
@@ -160,9 +161,10 @@ function injectOverlay(): void {
   `;
   root.appendChild(banner);
 
-  // --- Analyzing state banner ---
-  const analyzingBanner = document.createElement("div");
-  Object.assign(analyzingBanner.style, {
+  // --- Center status banner (analyzing / error) ---
+  const statusBanner = document.createElement("div");
+  statusBanner.setAttribute("data-role", "status");
+  Object.assign(statusBanner.style, {
     position: "absolute",
     top: "50%",
     left: "50%",
@@ -177,15 +179,37 @@ function injectOverlay(): void {
     zIndex: "2",
     textAlign: "center",
     display: "none",
+    maxWidth: "80vw",
+    lineHeight: "1.5",
     boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
     backdropFilter: "blur(8px)",
   } as CSSStyleDeclaration);
-  analyzingBanner.textContent = "Analyzing selection...";
-  root.appendChild(analyzingBanner);
+  root.appendChild(statusBanner);
 
   // --- State ---
   let dragStart: Point | null = null;
   let isDragging = false;
+  let safetyTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function showStatus(text: string, color?: string): void {
+    statusBanner.textContent = text;
+    statusBanner.style.color = color ?? "#00d9a3";
+    statusBanner.style.display = "block";
+  }
+
+  function startSafetyTimeout(): void {
+    safetyTimer = setTimeout(() => {
+      console.warn(LOG_PREFIX, "Safety timeout reached — auto-closing overlay");
+      removeOverlay();
+    }, OVERLAY_TIMEOUT_MS);
+  }
+
+  function clearSafetyTimeout(): void {
+    if (safetyTimer) {
+      clearTimeout(safetyTimer);
+      safetyTimer = null;
+    }
+  }
 
   function updateDimRegions(rect: Rect | null): void {
     if (!rect) {
@@ -252,6 +276,7 @@ function injectOverlay(): void {
     isDragging = true;
     dragStart = { x: e.clientX, y: e.clientY };
     banner.style.display = "none";
+    console.log(LOG_PREFIX, "Drag started at", dragStart);
   }
 
   function onMouseMove(e: MouseEvent): void {
@@ -277,27 +302,24 @@ function injectOverlay(): void {
       y: clamp(e.clientY, 0, window.innerHeight),
     };
     const rect = normalizeRect(dragStart, end);
+    console.log(LOG_PREFIX, "Drag ended", { start: dragStart, end, rect });
     dragStart = null;
 
     if (rect.width < MIN_SELECTION_PX || rect.height < MIN_SELECTION_PX) {
+      // Treat as a click (no-op), let user try again — don't show an error
+      console.log(LOG_PREFIX, "Click detected (no drag), ignoring:", rect.width, "x", rect.height);
       updateSelectionVisual(null);
       banner.style.display = "block";
-      banner.innerHTML = `
-        <span style="color:#ffb3b3">Selection too small</span> &mdash; Drag a larger area<br>
-        <span style="font-size:11px;color:#9eb4df;font-weight:400">Press <kbd style="background:rgba(255,255,255,0.12);padding:1px 5px;border-radius:3px;font-size:11px">ESC</kbd> to cancel</span>
-      `;
       return;
     }
 
     updateSelectionVisual(rect);
-
-    // Show "analyzing" state
-    analyzingBanner.style.display = "block";
+    showStatus("Analyzing selection...");
     root.style.cursor = "wait";
+    startSafetyTimeout();
 
-    console.log(LOG_PREFIX, "Selection complete, sending to service worker", rect);
+    console.log(LOG_PREFIX, "Sending OVERLAY_SELECTION to service worker", rect);
 
-    // Send selection to service worker
     chrome.runtime.sendMessage(
       {
         type: "OVERLAY_SELECTION",
@@ -311,10 +333,13 @@ function injectOverlay(): void {
       },
       (response) => {
         if (chrome.runtime.lastError) {
-          console.error(LOG_PREFIX, "Failed to send selection:", chrome.runtime.lastError.message);
-          removeOverlay();
+          console.error(LOG_PREFIX, "Failed to send OVERLAY_SELECTION:", chrome.runtime.lastError.message);
+          showStatus("Failed to reach service worker. Press ESC and try again.", "#ffb3b3");
+          clearSafetyTimeout();
+          // Auto-close after showing error
+          setTimeout(removeOverlay, 3000);
         } else {
-          console.log(LOG_PREFIX, "Selection acknowledged by service worker:", response);
+          console.log(LOG_PREFIX, "OVERLAY_SELECTION acknowledged:", response);
         }
       }
     );
@@ -331,26 +356,35 @@ function injectOverlay(): void {
 
 // --- Message listener for service worker commands ---
 // Guard against duplicate listeners from re-injection
-if (!(window as Record<string, unknown>).__bugsnap_overlay_listener) {
-  (window as Record<string, unknown>).__bugsnap_overlay_listener = true;
+if (!(window as unknown as Record<string, unknown>).__bugsnap_overlay_listener) {
+  (window as unknown as Record<string, unknown>).__bugsnap_overlay_listener = true;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type === "INJECT_OVERLAY") {
-      console.log(LOG_PREFIX, "Received INJECT_OVERLAY");
-      injectOverlay();
-      sendResponse({ ok: true });
-      return false;
-    }
-
-    if (message.type === "OVERLAY_ANALYZING") {
-      console.log(LOG_PREFIX, "Received OVERLAY_ANALYZING");
-      sendResponse({ ok: true });
-      return false;
-    }
-
     if (message.type === "OVERLAY_DONE") {
       console.log(LOG_PREFIX, "Received OVERLAY_DONE — closing overlay");
       removeOverlay();
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message.type === "OVERLAY_ERROR") {
+      console.log(LOG_PREFIX, "Received OVERLAY_ERROR:", message.message);
+      const overlay = document.getElementById(OVERLAY_ID);
+      if (overlay) {
+        const status = overlay.querySelector('[data-role="status"]') as HTMLElement | null;
+        if (status) {
+          status.textContent = message.message || "Analysis failed.";
+          status.style.color = "#ffb3b3";
+          status.style.display = "block";
+        }
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message.type === "INJECT_OVERLAY") {
+      console.log(LOG_PREFIX, "Received INJECT_OVERLAY");
+      injectOverlay();
       sendResponse({ ok: true });
       return false;
     }

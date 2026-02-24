@@ -106,7 +106,35 @@ function isRestrictedUrl(url?: string): boolean {
   );
 }
 
-// --- Overlay cleanup helper ---
+// --- Overlay communication helpers ---
+
+async function closeOverlay(tabId: number): Promise<void> {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "OVERLAY_DONE" });
+    console.log(LOG_PREFIX, "Sent OVERLAY_DONE to tab", tabId);
+  } catch {
+    console.warn(LOG_PREFIX, "OVERLAY_DONE message failed, force-removing via scripting");
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const el = document.getElementById("bugsnap-capture-overlay");
+          if (el) el.remove();
+        },
+      });
+    } catch {
+      console.warn(LOG_PREFIX, "Force-remove also failed (tab may be closed)");
+    }
+  }
+}
+
+async function showOverlayError(tabId: number, message: string): Promise<void> {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "OVERLAY_ERROR", message });
+  } catch {
+    // Tab may not be available
+  }
+}
 
 async function forceRemoveOverlay(tabId: number): Promise<void> {
   try {
@@ -135,7 +163,6 @@ async function startInPageCapture(modeOverride?: PromptMode): Promise<void> {
     throw new Error("Could not resolve browser window for capture.");
   }
 
-  // Check for restricted pages
   if (isRestrictedUrl(tab.url)) {
     throw new Error(
       "Cannot capture this page (browser internal pages are restricted). Navigate to a website and try again."
@@ -148,7 +175,6 @@ async function startInPageCapture(modeOverride?: PromptMode): Promise<void> {
   const screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
   console.log(LOG_PREFIX, "Screenshot captured, data URL length:", screenshotDataUrl.length);
 
-  // Store pending state
   pendingScreenshot = {
     dataUrl: screenshotDataUrl,
     pageUrl: tab.url,
@@ -160,7 +186,6 @@ async function startInPageCapture(modeOverride?: PromptMode): Promise<void> {
     tabId: tab.id,
   };
 
-  // Try to inject content script for in-page overlay
   try {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -210,9 +235,20 @@ async function handleOverlaySelection(
 ): Promise<void> {
   console.log(LOG_PREFIX, "handleOverlaySelection", { selectionRect, devicePixelRatio, senderTabId });
 
+  // Resolve the tab to close the overlay on — prefer pendingScreenshot.tabId, fall back to sender
+  const overlayTabId = pendingScreenshot?.tabId ?? senderTabId;
+
   if (!pendingScreenshot) {
-    console.error(LOG_PREFIX, "No pendingScreenshot — service worker may have restarted");
-    await storeError("No pending capture found. The service worker may have restarted. Please try again.");
+    console.error(LOG_PREFIX, "No pendingScreenshot — service worker likely restarted and lost state");
+    const errorMsg = "Capture state was lost (service worker restarted). Please try again.";
+    await storeError(errorMsg);
+    // MUST close the overlay even without pendingScreenshot
+    if (overlayTabId) {
+      await showOverlayError(overlayTabId, errorMsg);
+      // Brief delay so user can see the error before overlay closes
+      await new Promise((r) => setTimeout(r, 2500));
+      await closeOverlay(overlayTabId);
+    }
     return;
   }
 
@@ -221,8 +257,6 @@ async function handleOverlaySelection(
   console.log(LOG_PREFIX, "Server URL:", settings.serverUrl, "| Mode:", mode, "| Page:", pageUrl);
 
   try {
-    // Scale selection from viewport coordinates to actual image pixels
-    // The screenshot is at device pixel ratio scale
     const imageRect: CropRect = {
       x: Math.round(selectionRect.x * devicePixelRatio),
       y: Math.round(selectionRect.y * devicePixelRatio),
@@ -275,26 +309,23 @@ async function handleOverlaySelection(
     await persistResult(persistedResult);
     await clearError();
     console.log(LOG_PREFIX, "Result persisted successfully");
+    await closeOverlay(tabId);
   } catch (error) {
+    let errorMsg: string;
     if (error instanceof BugSnapApiError) {
+      errorMsg = `${error.userMessage} (${error.errorCode})`;
       console.error(LOG_PREFIX, "API error:", error.errorCode, error.userMessage, error.devMessage);
-      await storeError(`${error.userMessage} (${error.errorCode})`);
     } else {
-      const text = error instanceof Error ? error.message : "Analysis failed.";
-      console.error(LOG_PREFIX, "Analysis error:", text, error);
-      await storeError(text);
+      errorMsg = error instanceof Error ? error.message : "Analysis failed.";
+      console.error(LOG_PREFIX, "Analysis error:", errorMsg, error);
     }
+    await storeError(errorMsg);
+    // Show error on overlay before closing
+    await showOverlayError(tabId, errorMsg);
+    await new Promise((r) => setTimeout(r, 3000));
+    await closeOverlay(tabId);
   } finally {
     pendingScreenshot = null;
-    // Always close the overlay, even on failure
-    try {
-      await chrome.tabs.sendMessage(tabId, { type: "OVERLAY_DONE" });
-      console.log(LOG_PREFIX, "Overlay closed on tab", tabId);
-    } catch (closeError) {
-      console.warn(LOG_PREFIX, "Could not close overlay (tab may have closed):", closeError);
-      // Force-remove as fallback
-      await forceRemoveOverlay(tabId);
-    }
   }
 }
 

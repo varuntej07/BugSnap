@@ -20,7 +20,7 @@ interface Point {
   y: number;
 }
 
-const MIN_SELECTION_SIZE = 12;
+const MIN_SELECTION_SIZE = 3;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
