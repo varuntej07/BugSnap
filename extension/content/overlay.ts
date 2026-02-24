@@ -19,6 +19,7 @@ interface Rect {
 
 const OVERLAY_ID = "bugsnap-capture-overlay";
 const MIN_SELECTION_PX = 12;
+const LOG_PREFIX = "[BugSnap:Overlay]";
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -37,6 +38,7 @@ function removeOverlay(): void {
   const existing = document.getElementById(OVERLAY_ID);
   if (existing) {
     existing.remove();
+    console.log(LOG_PREFIX, "Overlay removed from DOM");
   }
   document.removeEventListener("keydown", handleKeyDown, true);
 }
@@ -45,16 +47,21 @@ function handleKeyDown(e: KeyboardEvent): void {
   if (e.key === "Escape") {
     e.preventDefault();
     e.stopPropagation();
+    console.log(LOG_PREFIX, "ESC pressed, cancelling");
     removeOverlay();
     chrome.runtime.sendMessage({ type: "OVERLAY_CANCEL" });
   }
 }
 
 function injectOverlay(): void {
-  // Prevent double injection
-  if (document.getElementById(OVERLAY_ID)) {
-    return;
+  // Remove any stale overlay first (e.g. from a previous failed attempt)
+  const existing = document.getElementById(OVERLAY_ID);
+  if (existing) {
+    console.log(LOG_PREFIX, "Removing stale overlay before re-injection");
+    existing.remove();
   }
+
+  console.log(LOG_PREFIX, "Injecting overlay");
 
   // --- Root container ---
   const root = document.createElement("div");
@@ -179,7 +186,6 @@ function injectOverlay(): void {
   // --- State ---
   let dragStart: Point | null = null;
   let isDragging = false;
-  let finalRect: Rect | null = null;
 
   function updateDimRegions(rect: Rect | null): void {
     if (!rect) {
@@ -193,26 +199,22 @@ function injectOverlay(): void {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
 
-    // Top: full width, from top to selection top
     Object.assign(dimTop.style, {
       top: "0", left: "0",
       width: `${vw}px`, height: `${rect.y}px`,
     });
 
-    // Bottom: full width, from selection bottom to viewport bottom
     const bottomY = rect.y + rect.height;
     Object.assign(dimBottom.style, {
       top: `${bottomY}px`, left: "0",
       width: `${vw}px`, height: `${vh - bottomY}px`,
     });
 
-    // Left: from selection top to selection bottom, left edge to selection left
     Object.assign(dimLeft.style, {
       top: `${rect.y}px`, left: "0",
       width: `${rect.x}px`, height: `${rect.height}px`,
     });
 
-    // Right: from selection top to selection bottom, selection right to viewport right
     const rightX = rect.x + rect.width;
     Object.assign(dimRight.style, {
       top: `${rect.y}px`, left: `${rightX}px`,
@@ -235,7 +237,7 @@ function injectOverlay(): void {
     selectionBox.style.height = `${rect.height}px`;
 
     sizeLabel.style.display = "block";
-    sizeLabel.textContent = `${Math.round(rect.width)}×${Math.round(rect.height)}`;
+    sizeLabel.textContent = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
     sizeLabel.style.left = `${rect.x}px`;
     sizeLabel.style.top = `${rect.y + rect.height + 4}px`;
 
@@ -248,7 +250,6 @@ function injectOverlay(): void {
     e.preventDefault();
     e.stopPropagation();
     isDragging = true;
-    finalRect = null;
     dragStart = { x: e.clientX, y: e.clientY };
     banner.style.display = "none";
   }
@@ -288,24 +289,35 @@ function injectOverlay(): void {
       return;
     }
 
-    finalRect = rect;
     updateSelectionVisual(rect);
 
     // Show "analyzing" state
     analyzingBanner.style.display = "block";
     root.style.cursor = "wait";
 
+    console.log(LOG_PREFIX, "Selection complete, sending to service worker", rect);
+
     // Send selection to service worker
-    chrome.runtime.sendMessage({
-      type: "OVERLAY_SELECTION",
-      rect: {
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height,
+    chrome.runtime.sendMessage(
+      {
+        type: "OVERLAY_SELECTION",
+        rect: {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        },
+        devicePixelRatio: window.devicePixelRatio || 1,
       },
-      devicePixelRatio: window.devicePixelRatio || 1,
-    });
+      (response) => {
+        if (chrome.runtime.lastError) {
+          console.error(LOG_PREFIX, "Failed to send selection:", chrome.runtime.lastError.message);
+          removeOverlay();
+        } else {
+          console.log(LOG_PREFIX, "Selection acknowledged by service worker:", response);
+        }
+      }
+    );
   }
 
   root.addEventListener("mousedown", onMouseDown, true);
@@ -314,31 +326,38 @@ function injectOverlay(): void {
   document.addEventListener("keydown", handleKeyDown, true);
 
   document.body.appendChild(root);
+  console.log(LOG_PREFIX, "Overlay injected and ready");
 }
 
 // --- Message listener for service worker commands ---
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type === "INJECT_OVERLAY") {
-    injectOverlay();
-    sendResponse({ ok: true });
-    return false;
-  }
+// Guard against duplicate listeners from re-injection
+if (!(window as Record<string, unknown>).__bugsnap_overlay_listener) {
+  (window as Record<string, unknown>).__bugsnap_overlay_listener = true;
 
-  if (message.type === "OVERLAY_ANALYZING") {
-    const banner = document.querySelector(`#${OVERLAY_ID} div:last-child`) as HTMLElement | null;
-    // Already showing analyzing state from mouseup
-    sendResponse({ ok: true });
-    return false;
-  }
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === "INJECT_OVERLAY") {
+      console.log(LOG_PREFIX, "Received INJECT_OVERLAY");
+      injectOverlay();
+      sendResponse({ ok: true });
+      return false;
+    }
 
-  if (message.type === "OVERLAY_DONE") {
-    removeOverlay();
-    sendResponse({ ok: true });
-    return false;
-  }
+    if (message.type === "OVERLAY_ANALYZING") {
+      console.log(LOG_PREFIX, "Received OVERLAY_ANALYZING");
+      sendResponse({ ok: true });
+      return false;
+    }
 
-  return false;
-});
+    if (message.type === "OVERLAY_DONE") {
+      console.log(LOG_PREFIX, "Received OVERLAY_DONE — closing overlay");
+      removeOverlay();
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    return false;
+  });
+}
 
 // Auto-inject when script loads
 injectOverlay();

@@ -1,4 +1,4 @@
-import { describeSelection } from "@shared/httpClient";
+import { describeSelection, BugSnapApiError } from "@shared/httpClient";
 import { buildStructuredPrompt } from "@shared/promptTemplates";
 import {
   DEFAULT_SETTINGS,
@@ -17,9 +17,12 @@ import {
   type ViewportSize
 } from "@shared/types";
 
+const LOG_PREFIX = "[BugSnap:SW]";
+
 // --- Service worker-compatible image crop using OffscreenCanvas ---
 
 async function cropDataUrlToBlob(dataUrl: string, rect: CropRect): Promise<Blob> {
+  console.log(LOG_PREFIX, "Cropping image", { x: rect.x, y: rect.y, w: rect.width, h: rect.height });
   const response = await fetch(dataUrl);
   const blob = await response.blob();
   const bitmap = await createImageBitmap(blob, rect.x, rect.y, rect.width, rect.height);
@@ -29,7 +32,9 @@ async function cropDataUrlToBlob(dataUrl: string, rect: CropRect): Promise<Blob>
     throw new Error("Could not create OffscreenCanvas 2d context.");
   }
   ctx.drawImage(bitmap, 0, 0);
-  return canvas.convertToBlob({ type: "image/png" });
+  const result = await canvas.convertToBlob({ type: "image/png" });
+  console.log(LOG_PREFIX, "Crop complete, blob size:", result.size);
+  return result;
 }
 
 // --- Pending state for in-page capture flow ---
@@ -53,6 +58,7 @@ async function getSettings(): Promise<ExtensionSettings> {
 }
 
 async function storeError(error: string): Promise<void> {
+  console.error(LOG_PREFIX, "Storing error:", error);
   await chrome.storage.local.set({
     [STORAGE_KEYS.lastError]: error
   });
@@ -63,6 +69,13 @@ async function clearError(): Promise<void> {
 }
 
 async function persistResult(result: PersistedResult): Promise<void> {
+  console.log(LOG_PREFIX, "Persisting result", {
+    request_id: result.response.request_id,
+    backend: result.response.backend_name,
+    degraded: result.response.degraded,
+    summary_length: result.response.ui_summary?.length,
+    prompt_short_length: result.response.prompt_short?.length,
+  });
   await chrome.storage.local.set({
     [STORAGE_KEYS.lastResult]: result
   });
@@ -80,20 +93,6 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
   return tab;
 }
 
-function toErrorMessage(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error);
-  if (text.includes("Permission denied") || text.includes("Cannot capture visible tab")) {
-    return "Chrome blocked screenshot capture for the current tab. Switch to the app/site tab and try again.";
-  }
-  if (text.includes("No window with id")) {
-    return "Could not resolve the browser window for capture.";
-  }
-  if (text.includes("Tabs cannot be edited right now")) {
-    return "The tab is still loading. Wait a moment and retry capture.";
-  }
-  return text || "Could not start capture.";
-}
-
 function isRestrictedUrl(url?: string): boolean {
   if (!url) return true;
   return (
@@ -107,12 +106,30 @@ function isRestrictedUrl(url?: string): boolean {
   );
 }
 
+// --- Overlay cleanup helper ---
+
+async function forceRemoveOverlay(tabId: number): Promise<void> {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const el = document.getElementById("bugsnap-capture-overlay");
+        if (el) el.remove();
+      },
+    });
+  } catch {
+    // Tab may not be scriptable
+  }
+}
+
 // --- In-page capture flow ---
 
 async function startInPageCapture(modeOverride?: PromptMode): Promise<void> {
   const settings = await getSettings();
   const mode = modeOverride ?? settings.mode;
   const tab = await getActiveTab();
+
+  console.log(LOG_PREFIX, "Starting capture", { tabId: tab.id, url: tab.url, mode });
 
   if (!tab.id || typeof tab.windowId !== "number") {
     throw new Error("Could not resolve browser window for capture.");
@@ -125,8 +142,11 @@ async function startInPageCapture(modeOverride?: PromptMode): Promise<void> {
     );
   }
 
-  // Capture screenshot BEFORE injecting overlay
+  // Force-remove any stale overlay from a previous capture attempt
+  await forceRemoveOverlay(tab.id);
+
   const screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+  console.log(LOG_PREFIX, "Screenshot captured, data URL length:", screenshotDataUrl.length);
 
   // Store pending state
   pendingScreenshot = {
@@ -146,9 +166,9 @@ async function startInPageCapture(modeOverride?: PromptMode): Promise<void> {
       target: { tabId: tab.id },
       files: ["content/overlay.js"],
     });
+    console.log(LOG_PREFIX, "Overlay injected into tab", tab.id);
   } catch (injectError) {
-    // Fallback to Capture Studio tab if injection fails
-    console.warn("Content script injection failed, falling back to Capture Studio:", injectError);
+    console.warn(LOG_PREFIX, "Content script injection failed, falling back to Capture Studio:", injectError);
     pendingScreenshot = null;
     await startCaptureStudioFallback(mode, screenshotDataUrl, tab);
   }
@@ -159,6 +179,7 @@ async function startCaptureStudioFallback(
   screenshotDataUrl: string,
   tab: chrome.tabs.Tab
 ): Promise<void> {
+  console.log(LOG_PREFIX, "Opening Capture Studio fallback");
   const pendingCapture: PendingCapture = {
     created_at: new Date().toISOString(),
     page_url: tab.url,
@@ -187,13 +208,17 @@ async function handleOverlaySelection(
   devicePixelRatio: number,
   senderTabId?: number
 ): Promise<void> {
+  console.log(LOG_PREFIX, "handleOverlaySelection", { selectionRect, devicePixelRatio, senderTabId });
+
   if (!pendingScreenshot) {
-    await storeError("No pending capture found. Please try again.");
+    console.error(LOG_PREFIX, "No pendingScreenshot — service worker may have restarted");
+    await storeError("No pending capture found. The service worker may have restarted. Please try again.");
     return;
   }
 
   const { dataUrl, pageUrl, viewport, mode, tabId } = pendingScreenshot;
   const settings = await getSettings();
+  console.log(LOG_PREFIX, "Server URL:", settings.serverUrl, "| Mode:", mode, "| Page:", pageUrl);
 
   try {
     // Scale selection from viewport coordinates to actual image pixels
@@ -207,6 +232,7 @@ async function handleOverlaySelection(
 
     const croppedBlob = await cropDataUrlToBlob(dataUrl, imageRect);
 
+    console.log(LOG_PREFIX, "Sending to backend:", settings.serverUrl + "/describe");
     const serverResponse = await describeSelection({
       image: croppedBlob,
       pageUrl,
@@ -215,8 +241,14 @@ async function handleOverlaySelection(
       serverUrl: settings.serverUrl,
       authToken: settings.authToken || undefined,
     });
+    console.log(LOG_PREFIX, "Backend response received", {
+      ok: serverResponse.ok,
+      request_id: serverResponse.request_id,
+      backend: serverResponse.backend_name,
+      degraded: serverResponse.degraded,
+      summary_preview: serverResponse.ui_summary?.slice(0, 120),
+    });
 
-    // Build fallback prompt if server prompts are empty
     const fallbackPrompt = buildStructuredPrompt({
       pageUrl,
       viewport,
@@ -242,25 +274,27 @@ async function handleOverlaySelection(
 
     await persistResult(persistedResult);
     await clearError();
-
-    // Tell overlay to close
-    try {
-      await chrome.tabs.sendMessage(tabId, { type: "OVERLAY_DONE" });
-    } catch {
-      // Tab may have closed
-    }
+    console.log(LOG_PREFIX, "Result persisted successfully");
   } catch (error) {
-    const text = error instanceof Error ? error.message : "Analysis failed.";
-    await storeError(text);
-
-    // Tell overlay to close
-    try {
-      await chrome.tabs.sendMessage(tabId, { type: "OVERLAY_DONE" });
-    } catch {
-      // Tab may have closed
+    if (error instanceof BugSnapApiError) {
+      console.error(LOG_PREFIX, "API error:", error.errorCode, error.userMessage, error.devMessage);
+      await storeError(`${error.userMessage} (${error.errorCode})`);
+    } else {
+      const text = error instanceof Error ? error.message : "Analysis failed.";
+      console.error(LOG_PREFIX, "Analysis error:", text, error);
+      await storeError(text);
     }
   } finally {
     pendingScreenshot = null;
+    // Always close the overlay, even on failure
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "OVERLAY_DONE" });
+      console.log(LOG_PREFIX, "Overlay closed on tab", tabId);
+    } catch (closeError) {
+      console.warn(LOG_PREFIX, "Could not close overlay (tab may have closed):", closeError);
+      // Force-remove as fallback
+      await forceRemoveOverlay(tabId);
+    }
   }
 }
 
@@ -273,6 +307,7 @@ async function initializeSettings(): Promise<void> {
       [STORAGE_KEYS.settings]: DEFAULT_SETTINGS
     });
   }
+  console.log(LOG_PREFIX, "Settings initialized");
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -300,6 +335,7 @@ chrome.commands.onCommand.addListener((command) => {
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendResponse) => {
   if (message.type === "START_CAPTURE") {
+    console.log(LOG_PREFIX, "Message: START_CAPTURE");
     const startCaptureMessage = message as StartCaptureMessage;
     void startInPageCapture(startCaptureMessage.mode)
       .then(async () => {
@@ -315,6 +351,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   }
 
   if (message.type === "OVERLAY_SELECTION") {
+    console.log(LOG_PREFIX, "Message: OVERLAY_SELECTION", (message as OverlaySelectionMessage).rect);
     const selMsg = message as OverlaySelectionMessage;
     void handleOverlaySelection(selMsg.rect, selMsg.devicePixelRatio, sender.tab?.id);
     sendResponse({ ok: true });
@@ -322,12 +359,14 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   }
 
   if (message.type === "OVERLAY_CANCEL") {
+    console.log(LOG_PREFIX, "Message: OVERLAY_CANCEL");
     pendingScreenshot = null;
     sendResponse({ ok: true });
     return false;
   }
 
   if (message.type === "SAVE_RESULT") {
+    console.log(LOG_PREFIX, "Message: SAVE_RESULT");
     const saveMessage = message as SaveResultMessage;
     void persistResult(saveMessage.result)
       .then(async () => {
@@ -342,6 +381,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   }
 
   if (message.type === "CAPTURE_FAILED") {
+    console.log(LOG_PREFIX, "Message: CAPTURE_FAILED", (message as CaptureFailedMessage).error);
     const failedMessage = message as CaptureFailedMessage;
     void Promise.all([
       storeError(failedMessage.error),

@@ -1,5 +1,7 @@
 import type { BugSnapError, BugSnapErrorCode, DescribeResponse, PromptMode, ViewportSize } from "./types";
 
+const LOG_PREFIX = "[BugSnap:HTTP]";
+
 interface DescribeSelectionRequest {
   image: Blob;
   pageUrl?: string;
@@ -78,6 +80,7 @@ function makeLocalError(
 
 export async function checkHealth(serverUrl?: string, authToken?: string): Promise<{ ok: boolean; backend: string; degraded: boolean }> {
   const endpoint = `${normalizeServerUrl(serverUrl)}/health`;
+  console.log(LOG_PREFIX, "Health check →", endpoint);
   const headers: Record<string, string> = {};
   if (authToken) {
     headers["Authorization"] = `Bearer ${authToken}`;
@@ -86,15 +89,18 @@ export async function checkHealth(serverUrl?: string, authToken?: string): Promi
   try {
     const response = await fetch(endpoint, { headers });
     if (!response.ok) {
+      console.warn(LOG_PREFIX, "Health check failed, status:", response.status);
       return { ok: false, backend: "unknown", degraded: true };
     }
     const data = (await response.json()) as Record<string, unknown>;
+    console.log(LOG_PREFIX, "Health check ←", data);
     return {
       ok: true,
       backend: (data.backend as string) ?? "unknown",
       degraded: (data.degraded as boolean) ?? false,
     };
-  } catch {
+  } catch (error) {
+    console.error(LOG_PREFIX, "Health check unreachable:", error);
     return { ok: false, backend: "unreachable", degraded: true };
   }
 }
@@ -119,6 +125,8 @@ export async function describeSelection(request: DescribeSelectionRequest): Prom
     headers["Authorization"] = `Bearer ${request.authToken}`;
   }
 
+  console.log(LOG_PREFIX, "POST →", endpoint, { mode: request.mode, imageSize: request.image.size, viewport: request.viewport });
+
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -126,6 +134,8 @@ export async function describeSelection(request: DescribeSelectionRequest): Prom
       signal: controller.signal,
       headers,
     });
+
+    console.log(LOG_PREFIX, "POST ← status:", response.status);
 
     if (!response.ok) {
       let errorBody: unknown;
@@ -166,6 +176,7 @@ export async function describeSelection(request: DescribeSelectionRequest): Prom
     }
 
     const payload = (await response.json()) as unknown;
+    console.log(LOG_PREFIX, "Response payload keys:", Object.keys(payload as object));
     return assertDescribeResponse(payload);
   } catch (error) {
     if (error instanceof BugSnapApiError) {
