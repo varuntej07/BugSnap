@@ -384,9 +384,14 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
   if (message.type === "OVERLAY_SELECTION") {
     console.log(LOG_PREFIX, "Message: OVERLAY_SELECTION", (message as OverlaySelectionMessage).rect);
     const selMsg = message as OverlaySelectionMessage;
-    void handleOverlaySelection(selMsg.rect, selMsg.devicePixelRatio, sender.tab?.id);
-    sendResponse({ ok: true });
-    return false;
+    handleOverlaySelection(selMsg.rect, selMsg.devicePixelRatio, sender.tab?.id)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err: unknown) => {
+        const text = err instanceof Error ? err.message : "Unknown error";
+        console.error(LOG_PREFIX, "handleOverlaySelection rejected:", text);
+        sendResponse({ ok: false, error: text });
+      });
+    return true;
   }
 
   if (message.type === "OVERLAY_CANCEL") {

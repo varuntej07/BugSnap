@@ -35,7 +35,16 @@ function normalizeRect(a: Point, b: Point): Rect {
   };
 }
 
+function clearSafetyTimer(): void {
+  const timerId = (window as unknown as Record<string, unknown>).__bugsnap_safety_timer as ReturnType<typeof setTimeout> | null;
+  if (timerId) {
+    clearTimeout(timerId);
+    (window as unknown as Record<string, unknown>).__bugsnap_safety_timer = null;
+  }
+}
+
 function removeOverlay(): void {
+  clearSafetyTimer();
   const existing = document.getElementById(OVERLAY_ID);
   if (existing) {
     existing.remove();
@@ -189,7 +198,6 @@ function injectOverlay(): void {
   // --- State ---
   let dragStart: Point | null = null;
   let isDragging = false;
-  let safetyTimer: ReturnType<typeof setTimeout> | null = null;
 
   function showStatus(text: string, color?: string): void {
     statusBanner.textContent = text;
@@ -198,17 +206,13 @@ function injectOverlay(): void {
   }
 
   function startSafetyTimeout(): void {
-    safetyTimer = setTimeout(() => {
+    // Clear any stale timer from a previous capture/injection
+    clearSafetyTimer();
+    const timerId = setTimeout(() => {
       console.warn(LOG_PREFIX, "Safety timeout reached — auto-closing overlay");
       removeOverlay();
     }, OVERLAY_TIMEOUT_MS);
-  }
-
-  function clearSafetyTimeout(): void {
-    if (safetyTimer) {
-      clearTimeout(safetyTimer);
-      safetyTimer = null;
-    }
+    (window as unknown as Record<string, unknown>).__bugsnap_safety_timer = timerId;
   }
 
   function updateDimRegions(rect: Rect | null): void {
@@ -335,7 +339,7 @@ function injectOverlay(): void {
         if (chrome.runtime.lastError) {
           console.error(LOG_PREFIX, "Failed to send OVERLAY_SELECTION:", chrome.runtime.lastError.message);
           showStatus("Failed to reach service worker. Press ESC and try again.", "#ffb3b3");
-          clearSafetyTimeout();
+          clearSafetyTimer();
           // Auto-close after showing error
           setTimeout(removeOverlay, 3000);
         } else {

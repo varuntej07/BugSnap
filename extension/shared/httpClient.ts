@@ -31,7 +31,7 @@ export class BugSnapApiError extends Error {
 }
 
 function normalizeServerUrl(rawUrl?: string): string {
-  const fallback = "https://bugsnap.vercel.app";
+  const fallback = "https://bug-snap-2kgx.vercel.app";
   const value = (rawUrl ?? fallback).trim();
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
@@ -175,9 +175,29 @@ export async function describeSelection(request: DescribeSelectionRequest): Prom
       );
     }
 
-    const payload = (await response.json()) as unknown;
+    let payload: unknown;
+    try {
+      payload = (await response.json()) as unknown;
+    } catch (jsonError) {
+      throw makeLocalError(
+        "INVALID_RESPONSE_SCHEMA",
+        "Server returned an unreadable response. The server may be misconfigured.",
+        `Failed to parse JSON from ${endpoint}: ${jsonError instanceof Error ? jsonError.message : String(jsonError)}`,
+        true,
+      );
+    }
     console.log(LOG_PREFIX, "Response payload keys:", Object.keys(payload as object));
-    return assertDescribeResponse(payload);
+
+    try {
+      return assertDescribeResponse(payload);
+    } catch (validationError) {
+      throw makeLocalError(
+        "INVALID_RESPONSE_SCHEMA",
+        "Server returned an unexpected response format. The server may need updating.",
+        `Validation failed for ${endpoint}: ${validationError instanceof Error ? validationError.message : String(validationError)} — keys: ${Object.keys(payload as object).join(",")}`,
+        true,
+      );
+    }
   } catch (error) {
     if (error instanceof BugSnapApiError) {
       throw error;
@@ -190,18 +210,18 @@ export async function describeSelection(request: DescribeSelectionRequest): Prom
         true,
       );
     }
-    if (error instanceof TypeError && error.message.includes("fetch")) {
+    if (error instanceof TypeError) {
       throw makeLocalError(
         "SERVER_UNREACHABLE",
         "Could not reach BugSnap server. Check your connection and server URL.",
-        `fetch error: ${error.message}`,
+        `Network error for ${endpoint}: ${error.message}`,
         true,
       );
     }
     throw makeLocalError(
       "SERVER_UNREACHABLE",
       "Could not reach BugSnap server. Check your connection and server URL.",
-      error instanceof Error ? error.message : String(error),
+      `Unexpected error for ${endpoint}: ${error instanceof Error ? error.message : String(error)}`,
       true,
     );
   } finally {

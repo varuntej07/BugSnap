@@ -224,11 +224,24 @@ rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_PER_MINUTE, RATE_LIMIT_WINDOW
 @app.on_event("startup")
 async def startup_event() -> None:
     backend_name = env_value("BUGSNAP_VLM_BACKEND", "SNAPPROMPT_VLM_BACKEND") or "openai"
+    openai_api_key = env_value("OPENAI_API_KEY")
+
+    if backend_name.strip().lower() == "openai":
+        if openai_api_key:
+            masked = openai_api_key[:8] + "..." + openai_api_key[-4:]
+            LOGGER.info("OPENAI_API_KEY found — key prefix: %s", masked)
+        else:
+            LOGGER.critical(
+                "OPENAI_API_KEY is NOT set but backend is 'openai'. "
+                "Requests will fall back to heuristic descriptions. "
+                "Set OPENAI_API_KEY in Vercel environment variables."
+            )
+
     config = InferenceConfig(
         backend=backend_name,
         model_name=env_value("BUGSNAP_VLM_MODEL", "SNAPPROMPT_VLM_MODEL") or "microsoft/Florence-2-base",
         max_new_tokens=env_int("BUGSNAP_MAX_NEW_TOKENS", 200, "SNAPPROMPT_MAX_NEW_TOKENS"),
-        openai_api_key=env_value("OPENAI_API_KEY"),
+        openai_api_key=openai_api_key,
         openai_model=env_value("BUGSNAP_OPENAI_MODEL") or "gpt-4o",
     )
     app.state.vlm_backend = load_backend(config)

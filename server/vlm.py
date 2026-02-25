@@ -156,49 +156,71 @@ class OpenAIVisionBackend:
 
     def describe(self, image: Image.Image) -> str:
         image_rgb = image.convert("RGB")
+        LOGGER.info(
+            "OpenAI describe() called — image size: %dx%d, model: %s",
+            image_rgb.width,
+            image_rgb.height,
+            self.model_name,
+        )
 
         buffer = io.BytesIO()
         image_rgb.save(buffer, format="PNG")
-        b64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        image_bytes = buffer.getvalue()
+        b64_image = base64.b64encode(image_bytes).decode("utf-8")
+        LOGGER.info("Image encoded to base64 — PNG size: %d bytes, sending to OpenAI...", len(image_bytes))
 
-        response = self._client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a UI analysis expert. Describe the visible UI elements, "
-                        "layout structure, and any potential visual issues in this screenshot region. "
-                        "Focus on: element types (buttons, inputs, text, navigation, cards, modals, tables), "
-                        "alignment issues, spacing problems, overflow/clipping, typography inconsistencies, "
-                        "and z-index/layering conflicts. Be specific and concise."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Analyze this UI screenshot region. Describe what you see including layout, elements, and any visual bugs or issues.",
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{b64_image}",
-                                "detail": "high",
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a UI analysis expert. Describe the visible UI elements, "
+                            "layout structure, and any potential visual issues in this screenshot region. "
+                            "Focus on: element types (buttons, inputs, text, navigation, cards, modals, tables), "
+                            "alignment issues, spacing problems, overflow/clipping, typography inconsistencies, "
+                            "and z-index/layering conflicts. Be specific and concise."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Analyze this UI screenshot region. Describe what you see including layout, elements, and any visual bugs or issues.",
                             },
-                        },
-                    ],
-                },
-            ],
-            max_tokens=500,
-            temperature=0.1,
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{b64_image}",
+                                    "detail": "high",
+                                },
+                            },
+                        ],
+                    },
+                ],
+                max_tokens=500,
+                temperature=0.1,
+            )
+        except Exception as exc:
+            LOGGER.error("OpenAI API call FAILED — model: %s, error: %s", self.model_name, exc, exc_info=True)
+            raise
+
+        usage = getattr(response, "usage", None)
+        LOGGER.info(
+            "OpenAI API call succeeded — model: %s, prompt_tokens: %s, completion_tokens: %s, total_tokens: %s",
+            self.model_name,
+            getattr(usage, "prompt_tokens", "?"),
+            getattr(usage, "completion_tokens", "?"),
+            getattr(usage, "total_tokens", "?"),
         )
 
         content = response.choices[0].message.content
         if not content or not content.strip():
             LOGGER.warning("OpenAI returned empty caption")
             return "UI region with visible elements. Detailed analysis unavailable."
+        LOGGER.info("OpenAI caption received (%d chars)", len(content))
         return content.strip()
 
 
