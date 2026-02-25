@@ -1,4 +1,4 @@
-export type PromptMode = "ui_bug_fix" | "ui_polish" | "implement_like_this";
+export type PromptMode = "fix_this" | "build_this";
 
 export type PromptVerbosity = "short" | "verbose";
 
@@ -80,8 +80,8 @@ export interface ExtensionSettings {
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
-  serverUrl: "https://bugsnap.vercel.app",
-  mode: "ui_bug_fix",
+  serverUrl: "https://bug-snap-2kgx.vercel.app",
+  mode: "fix_this",
   verbosity: "short",
   authToken: ""
 };

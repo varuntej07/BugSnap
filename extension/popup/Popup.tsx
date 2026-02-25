@@ -12,10 +12,9 @@ import {
 import { checkHealth } from "@shared/httpClient";
 import "./popup.css";
 
-const MODE_OPTIONS: Array<{ value: PromptMode; label: string }> = [
-  { value: "ui_bug_fix", label: "UI Bug Fix" },
-  { value: "ui_polish", label: "UI Polish" },
-  { value: "implement_like_this", label: "Implement Like This" }
+const MODE_OPTIONS: Array<{ value: PromptMode; label: string; description: string }> = [
+  { value: "fix_this", label: "Fix This", description: "Describe and fix a bug, error, or layout issue" },
+  { value: "build_this", label: "Build This", description: "Implement a component from a reference design" },
 ];
 
 function mergeSettings(raw: unknown): ExtensionSettings {

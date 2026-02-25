@@ -1,7 +1,6 @@
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { cropBase64ToPngBlob, scaleRectToImage } from "@shared/imageCrop";
 import { describeSelection, BugSnapApiError } from "@shared/httpClient";
-import { buildStructuredPrompt } from "@shared/promptTemplates";
 import {
   DEFAULT_SETTINGS,
   STORAGE_KEYS,
@@ -263,27 +262,12 @@ export function Capture() {
         authToken: settings.authToken || undefined,
       });
 
-      const fallbackPrompt = buildStructuredPrompt({
-        pageUrl: pendingCapture.page_url,
-        viewport,
-        mode: pendingCapture.mode,
-        uiSummary: serverResponse.ui_summary,
-        detectedElements: serverResponse.detected_elements,
-        suspectedIssues: serverResponse.suspected_issues
-      });
-
-      const response = {
-        ...serverResponse,
-        prompt_short: serverResponse.prompt_short?.trim() ? serverResponse.prompt_short : fallbackPrompt,
-        prompt_verbose: serverResponse.prompt_verbose?.trim() ? serverResponse.prompt_verbose : fallbackPrompt
-      };
-
       const persistedResult: PersistedResult = {
         created_at: new Date().toISOString(),
         page_url: pendingCapture.page_url,
         viewport,
         mode: pendingCapture.mode,
-        response
+        response: serverResponse
       };
 
       const saveResponse = (await chrome.runtime.sendMessage({

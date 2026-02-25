@@ -176,11 +176,18 @@ class OpenAIVisionBackend:
                     {
                         "role": "system",
                         "content": (
-                            "You are a UI analysis expert. Describe the visible UI elements, "
-                            "layout structure, and any potential visual issues in this screenshot region. "
-                            "Focus on: element types (buttons, inputs, text, navigation, cards, modals, tables), "
-                            "alignment issues, spacing problems, overflow/clipping, typography inconsistencies, "
-                            "and z-index/layering conflicts. Be specific and concise."
+                            "You are a UI and code analysis expert. Analyze the screenshot and respond with a specific, factual description. "
+                            "Follow these rules strictly:\n"
+                            "1. If you see any error messages, exceptions, stack traces, or console output: "
+                            "quote the exact error text verbatim in backticks, then describe where it appears.\n"
+                            "2. If you see a UI layout issue: name the exact elements affected and describe the specific problem "
+                            "(e.g. 'the nav links are overflowing past the right edge of the container at this viewport width', "
+                            "not vague phrases like 'there may be layout issues').\n"
+                            "3. If you see a design/styling concern: describe the specific visual inconsistency "
+                            "(e.g. 'the heading has 32px margin-bottom but the paragraph below has only 4px margin-top, creating visual imbalance').\n"
+                            "4. If this looks like a reference design to implement: describe the layout structure, "
+                            "component types, spacing, and visual hierarchy in concrete terms.\n"
+                            "Be specific. Use element names, positions, and visible text. Do not hedge — state what you see."
                         ),
                     },
                     {
@@ -188,7 +195,7 @@ class OpenAIVisionBackend:
                         "content": [
                             {
                                 "type": "text",
-                                "text": "Analyze this UI screenshot region. Describe what you see including layout, elements, and any visual bugs or issues.",
+                                "text": "Analyze this screenshot. If there are error messages or stack traces, quote them exactly. Describe what's visually wrong or what you see.",
                             },
                             {
                                 "type": "image_url",

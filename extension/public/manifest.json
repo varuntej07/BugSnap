@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "BugSnap",
   "short_name": "BugSnap",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Capture a UI region and generate structured coding prompts to fix bugs faster.",
   "permissions": ["activeTab", "storage", "scripting"],
   "host_permissions": [

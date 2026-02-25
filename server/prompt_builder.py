@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Iterable, Literal, TypedDict
+import re
+from typing import Literal, TypedDict
 
 ElementType = Literal["button", "input", "modal", "nav", "card", "table", "text"]
-PromptMode = Literal["ui_bug_fix", "ui_polish", "implement_like_this"]
+PromptMode = Literal["fix_this", "build_this"]
+Intent = Literal["error_log", "ui_bug", "design_polish"]
 
 
 class DetectedElement(TypedDict):
@@ -11,179 +13,123 @@ class DetectedElement(TypedDict):
     notes: str
 
 
+# --- Element detection ---
+
 ELEMENT_KEYWORDS: dict[ElementType, tuple[str, ...]] = {
-    "button": ("button", "cta", "primary action", "secondary action", "click"),
+    "button": ("button", "cta", "primary action", "click"),
     "input": ("input", "form", "field", "textbox", "search", "dropdown"),
     "modal": ("modal", "dialog", "popup", "overlay", "drawer"),
     "nav": ("navigation", "navbar", "sidebar", "menu", "tab"),
     "card": ("card", "tile", "panel", "widget"),
     "table": ("table", "row", "column", "grid", "list"),
-    "text": ("heading", "title", "label", "paragraph", "caption", "text"),
+    "text": ("heading", "title", "label", "paragraph", "text"),
 }
 
-MODE_GOALS: dict[PromptMode, str] = {
-    "ui_bug_fix": "Fix layout and visual bugs in the selected region without changing unrelated behavior.",
-    "ui_polish": "Improve visual polish, hierarchy, and spacing consistency while preserving functionality.",
-    "implement_like_this": "Implement the selected region faithfully as a target design reference.",
-}
+# --- Intent detection ---
 
-MODE_ACCEPTANCE: dict[PromptMode, list[str]] = {
-    "ui_bug_fix": [
-        "No clipped text, no overlap, and no horizontal overflow at the given viewport.",
-        "Key controls align correctly on both axes and maintain consistent spacing.",
-        "Typography scale, line-height, and weight are internally consistent.",
-        "Fixes are scoped to relevant components only."
-    ],
-    "ui_polish": [
-        "Spacing follows a coherent scale and improves visual rhythm.",
-        "Typography hierarchy is clearer and easier to scan.",
-        "Contrast and emphasis improve readability and action clarity.",
-        "Layout remains responsive and stable at nearby breakpoints."
-    ],
-    "implement_like_this": [
-        "Component structure, spacing, and alignment match the reference closely.",
-        "Interaction states and semantics remain accessible.",
-        "Implementation stays maintainable and token-driven.",
-        "Layout scales cleanly across desktop and mobile widths."
-    ],
-}
+INTENT_ERROR_KEYWORDS = (
+    "error", "exception", "traceback", "stack trace", "stack:", "at line",
+    "undefined is not", "cannot read", "typeerror", "referenceerror",
+    "syntaxerror", "valueerror", "keyerror", "indexerror", "attributeerror",
+    "uncaught", "unhandled", "failed to", "404", "500", "502", "503",
+    "fatal", "panic", "null pointer", "segfault", "abort", "console.error",
+    "warning:", "error:", "exception:", "err:", "✗", "✕",
+)
 
-MODE_HINTS: dict[PromptMode, list[str]] = {
-    "ui_bug_fix": [
-        "Inspect flex/grid axis settings, gap usage, and container constraints.",
-        "Check `box-sizing`, min/max constraints, and nested width calculations.",
-        "Audit `overflow`, `line-height`, and text wrapping behavior.",
-        "Verify stacking context and `z-index` only where layering is involved."
-    ],
-    "ui_polish": [
-        "Normalize spacing values to a small token scale.",
-        "Refine text styles (size, line-height, weight, letter-spacing) per hierarchy level.",
-        "Balance white space around controls and groups.",
-        "Tune color contrast and interactive affordances."
-    ],
-    "implement_like_this": [
-        "Rebuild structure first, then apply spacing and typography passes.",
-        "Use semantic wrappers and avoid brittle absolute offsets.",
-        "Implement responsive behavior with flexible tracks and wrapping.",
-        "Keep CSS selectors component-scoped and predictable."
-    ],
-}
+INTENT_DESIGN_KEYWORDS = (
+    "font weight", "typography", "color scheme", "contrast ratio",
+    "visual hierarchy", "whitespace", "letter-spacing", "line-height",
+    "border-radius", "shadow", "opacity", "aesthetic", "branding",
+)
 
-DEBUG_CHECKLIST = [
-    "Start by reproducing the issue with browser devtools open and inspect computed styles on the selected region.",
-    "Identify the nearest layout container controlling flow and dimensions; verify whether it uses flex, grid, block, or absolute positioning.",
-    "Compare rendered box sizes with intended sizes and inspect content-box vs border-box behavior.",
-    "Validate alignment settings (`align-items`, `justify-content`, `place-items`) relative to the active axis and writing mode.",
-    "Review spacing sources (`gap`, `padding`, `margin`) and remove accidental duplicates from parent/child stacks.",
-    "Check intrinsic width constraints caused by long text, fixed-width elements, min-content sizing, or unbroken strings.",
-    "Inspect text rendering details such as line-height, font fallback, letter spacing, and truncated labels.",
-    "Verify overflow rules and ensure clipping is intentional where used (`overflow: hidden`, masks, line clamp).",
-    "Audit stacking contexts created by transforms, opacity, or positioned ancestors before adjusting z-index values.",
-    "Test hover/focus/active states to confirm visual fixes do not regress interactions.",
-    "Evaluate responsiveness at adjacent viewport widths and ensure no new breakpoints are needed for this scope.",
-    "After applying fixes, re-measure spacing and alignment to ensure consistency with surrounding UI."
-]
+INTENT_BUG_KEYWORDS = (
+    "overlap", "overflowing", "overflow", "misalign", "misaligned",
+    "clipped", "truncated", "cut off", "shifted", "offset", "broken",
+    "z-index", "stacking", "hidden behind", "floating", "out of bounds",
+    "not aligned", "inconsistent spacing", "gap", "wrapping incorrectly",
+)
 
 
-def word_count(text: str) -> int:
-    return len([piece for piece in text.split() if piece.strip()])
+def detect_intent(caption: str) -> Intent:
+    lowered = caption.lower()
+    if any(kw in lowered for kw in INTENT_ERROR_KEYWORDS):
+        return "error_log"
+    if any(kw in lowered for kw in INTENT_BUG_KEYWORDS):
+        return "ui_bug"
+    if any(kw in lowered for kw in INTENT_DESIGN_KEYWORDS):
+        return "design_polish"
+    return "ui_bug"
 
 
-def trim_to_max_words(text: str, max_words: int) -> str:
-    words = [piece for piece in text.split() if piece.strip()]
-    if len(words) <= max_words:
-        return text
-    return " ".join(words[:max_words]).strip()
+def extract_error_text(caption: str) -> str | None:
+    """Extract the first verbatim error message from the caption (backtick-quoted by GPT-4o)."""
+    # Look for backtick-quoted text (GPT-4o quotes error messages this way per our prompt)
+    backtick_match = re.search(r"`([^`]{8,})`", caption)
+    if backtick_match:
+        return backtick_match.group(1).strip()
 
+    # Fallback: look for lines that start with known error prefixes
+    for line in caption.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if any(lower.startswith(prefix) for prefix in ("typeerror:", "referenceerror:", "syntaxerror:", "error:", "uncaught ", "exception:")):
+            return stripped
 
-def ensure_min_words(text: str, min_words: int, filler_lines: Iterable[str]) -> str:
-    output = text.strip()
-    if word_count(output) >= min_words:
-        return output
-
-    lines = list(filler_lines)
-    index = 0
-    while word_count(output) < min_words and index < len(lines):
-        output += "\n- " + lines[index]
-        index += 1
-    return output
-
-
-def summarize_caption(caption: str) -> str:
-    cleaned = " ".join(caption.replace("\n", " ").split())
-    if not cleaned:
-        return "The selected region contains web UI controls and text content with layout relationships."
-
-    parts = cleaned.split(".")
-    short = ". ".join(part.strip() for part in parts if part.strip())[:620].strip()
-    if not short.endswith("."):
-        short += "."
-    return short
+    return None
 
 
 def detect_elements(summary: str) -> list[DetectedElement]:
     lowered = summary.lower()
     elements: list[DetectedElement] = []
-
     for element_type, keywords in ELEMENT_KEYWORDS.items():
         if any(keyword in lowered for keyword in keywords):
-            elements.append(
-                {
-                    "type": element_type,
-                    "notes": f"Detected via textual cues related to {', '.join(keywords[:2])}."
-                }
-            )
-
+            elements.append({"type": element_type, "notes": f"Detected via textual cues related to {', '.join(keywords[:2])}."})
     if not elements:
         elements.append({"type": "text", "notes": "No strong component clues; text blocks are still visible."})
-
     return elements[:7]
 
 
-def infer_issues(summary: str, elements: list[DetectedElement]) -> list[str]:
-    lowered = summary.lower()
+def infer_issues(caption: str, elements: list[DetectedElement]) -> list[str]:
+    """Derive a short list of specific suspected issues from the caption."""
+    lowered = caption.lower()
     issues: list[str] = []
 
-    if "overlap" in lowered or "stack" in lowered:
-        issues.append("Potential overlapping layers or stacking order conflict.")
-    if "clipped" in lowered or "truncate" in lowered or "cut off" in lowered:
-        issues.append("Text may be clipped or truncated due to height/overflow constraints.")
-    if "dense" in lowered or "crowded" in lowered:
-        issues.append("Spacing may be too tight, reducing readability and visual rhythm.")
-    if "misalign" in lowered or "off-center" in lowered:
-        issues.append("Likely cross-axis or baseline alignment mismatch.")
-    if "small text" in lowered or "low contrast" in lowered:
-        issues.append("Typography size/contrast could be harming readability.")
+    if "overlap" in lowered:
+        issues.append("Elements are overlapping — check z-index and position context.")
+    if "overflow" in lowered or "overflowing" in lowered:
+        issues.append("Content overflows its container — check width constraints and overflow rules.")
+    if "truncat" in lowered or "cut off" in lowered or "clipped" in lowered:
+        issues.append("Text is being clipped or truncated — check overflow and line-height settings.")
+    if "misalign" in lowered or "not aligned" in lowered:
+        issues.append("Alignment mismatch — check flex/grid axis and align-items settings.")
+    if "spacing" in lowered and ("inconsistent" in lowered or "tight" in lowered or "large" in lowered):
+        issues.append("Spacing is inconsistent — normalize gap, padding, or margin to a token scale.")
+    if "typography" in lowered or "font" in lowered:
+        issues.append("Typography scale or weight appears inconsistent across elements.")
 
     element_types = {item["type"] for item in elements}
-    if "table" in element_types:
-        issues.append("Tabular/list region may suffer from column width or overflow instability.")
-    if "modal" in element_types:
-        issues.append("Modal layering and focus hierarchy may be inconsistent.")
-    if "input" in element_types:
-        issues.append("Form controls may have inconsistent heights, padding, or label alignment.")
+    if "input" in element_types and not issues:
+        issues.append("Form controls may have inconsistent padding or label alignment.")
+    if "modal" in element_types and not issues:
+        issues.append("Modal layering or focus hierarchy may be off.")
 
     if not issues:
         issues = [
-            "Potential spacing inconsistency between adjacent elements.",
-            "Possible alignment mismatch between labels and controls.",
-            "Possible overflow/truncation risk at current viewport.",
-            "Typography hierarchy may be inconsistent across nearby components."
+            "Spacing or alignment inconsistency between adjacent elements.",
+            "Possible overflow or truncation at this viewport size.",
         ]
 
-    deduped: list[str] = []
-    for item in issues:
-        if item not in deduped:
-            deduped.append(item)
-    return deduped[:8]
+    return issues[:5]
 
 
-def _list_lines(items: list[str]) -> str:
-    return "\n".join(f"- {item}" for item in items)
+# --- Prompt builders ---
 
-
-def _elements_lines(elements: list[DetectedElement]) -> str:
-    return "\n".join(f"- {element['type']}: {element['notes']}" for element in elements)
+def _short_page_ref(page_url: str | None) -> str:
+    if not page_url:
+        return "this page"
+    # Strip protocol and trailing slash for readability
+    clean = re.sub(r"^https?://", "", page_url).rstrip("/")
+    return clean if len(clean) < 60 else clean[:57] + "..."
 
 
 def build_short_prompt(
@@ -191,39 +137,60 @@ def build_short_prompt(
     page_url: str | None,
     viewport_width: int,
     viewport_height: int,
-    summary: str,
+    caption: str,
     elements: list[DetectedElement],
     issues: list[str],
 ) -> str:
-    prompt = f"""
-Context
-- Page URL: {page_url or "Unavailable"}
-- Viewport: {viewport_width}x{viewport_height}
-- User Goal: {MODE_GOALS[mode]}
+    page_ref = _short_page_ref(page_url)
+    viewport_str = f"{viewport_width}x{viewport_height}" if viewport_width and viewport_height else ""
 
-What's Visible (Selected Region)
-{summary}
+    if mode == "build_this":
+        prompt = (
+            f"I want to implement something that looks like this. "
+            f"{caption.strip()} "
+            f"Build a component that matches this layout and visual structure"
+            f"{f' at {viewport_str} viewport' if viewport_str else ''}. "
+            f"Use semantic markup, keep it responsive, and match the spacing and typography shown."
+        )
+        return prompt.strip()
 
-Detected Elements
-{_elements_lines(elements)}
+    # fix_this mode — intent-driven
+    intent = detect_intent(caption)
 
-What Seems Wrong
-{_list_lines(issues)}
+    if intent == "error_log":
+        error_text = extract_error_text(caption)
+        if error_text:
+            prompt = (
+                f"I'm getting `{error_text}` on {page_ref}. "
+                f"{caption.strip()} "
+                f"Fix this without changing unrelated logic."
+            )
+        else:
+            prompt = (
+                f"I'm seeing an error on {page_ref}. "
+                f"{caption.strip()} "
+                f"Fix this without changing unrelated code."
+            )
+        return prompt.strip()
 
-Desired Outcome (Acceptance Criteria)
-{_list_lines(MODE_ACCEPTANCE[mode])}
+    if intent == "design_polish":
+        issue_hint = issues[0] if issues else "the visual spacing feels inconsistent"
+        prompt = (
+            f"The UI on {page_ref} looks visually off — {issue_hint.lower().rstrip('.')}. "
+            f"{caption.strip()} "
+            f"Polish this section to improve visual consistency without touching functionality."
+        )
+        return prompt.strip()
 
-Implementation Hints (Likely Causes)
-{_list_lines(MODE_HINTS[mode])}
-
-Execution Notes
-- Provide a targeted code change that addresses the region only.
-- Explain root cause briefly before showing updated code.
-- Include validation checks for alignment, spacing, overflow, and text readability after the fix.
-""".strip()
-
-    prompt = ensure_min_words(prompt, 250, DEBUG_CHECKLIST)
-    return trim_to_max_words(prompt, 400)
+    # ui_bug (default)
+    issue_hint = issues[0] if issues else "there's a layout issue"
+    prompt = (
+        f"I'm seeing a layout issue on {page_ref}"
+        f"{f' at {viewport_str}' if viewport_str else ''}. "
+        f"{caption.strip()} "
+        f"Fix {issue_hint.lower().rstrip('.')} without touching unrelated components."
+    )
+    return prompt.strip()
 
 
 def build_verbose_prompt(
@@ -231,104 +198,114 @@ def build_verbose_prompt(
     page_url: str | None,
     viewport_width: int,
     viewport_height: int,
-    summary: str,
+    caption: str,
     elements: list[DetectedElement],
     issues: list[str],
 ) -> str:
-    details = f"""
-Context
-- Page URL: {page_url or "Unavailable"}
-- Viewport: {viewport_width}x{viewport_height}
-- User Goal: {MODE_GOALS[mode]}
-- Task Type: {mode}
+    short = build_short_prompt(
+        mode=mode,
+        page_url=page_url,
+        viewport_width=viewport_width,
+        viewport_height=viewport_height,
+        caption=caption,
+        elements=elements,
+        issues=issues,
+    )
 
-What's Visible (Selected Region)
-{summary}
+    element_names = ", ".join(e["type"] for e in elements) if elements else "unknown"
+    issues_block = "\n".join(f"- {i}" for i in issues)
 
-Detected Elements
-{_elements_lines(elements)}
+    if mode == "build_this":
+        verbose = (
+            f"{short}\n\n"
+            f"Visible elements: {element_names}.\n"
+            f"Implementation notes:\n"
+            f"- Rebuild structure first, then apply spacing and typography.\n"
+            f"- Use semantic HTML and avoid hard-coded pixel offsets.\n"
+            f"- Keep styles component-scoped and responsive."
+        )
+        return verbose.strip()
 
-What Seems Wrong (Hypotheses)
-{_list_lines(issues)}
+    intent = detect_intent(caption)
 
-Desired Outcome (Acceptance Criteria)
-{_list_lines(MODE_ACCEPTANCE[mode])}
+    if intent == "error_log":
+        verbose = (
+            f"{short}\n\n"
+            f"What I suspect is happening:\n{issues_block}\n\n"
+            f"Steps to investigate:\n"
+            f"- Check the stack trace for the exact file and line.\n"
+            f"- Verify null/undefined checks around the failing call.\n"
+            f"- Reproduce in isolation before applying the fix.\n"
+            f"- Confirm no related tests break after the change."
+        )
+        return verbose.strip()
 
-Implementation Hints (Likely CSS/Layout Causes)
-{_list_lines(MODE_HINTS[mode])}
+    if intent == "design_polish":
+        verbose = (
+            f"{short}\n\n"
+            f"Visual issues I see:\n{issues_block}\n\n"
+            f"What to check:\n"
+            f"- Normalize spacing to a consistent token scale (4px/8px grid).\n"
+            f"- Verify typography hierarchy: heading vs body size and weight.\n"
+            f"- Confirm contrast meets readability standards.\n"
+            f"- Test at nearby breakpoints to ensure the fix doesn't regress."
+        )
+        return verbose.strip()
 
-Detailed Debugging and Implementation Plan
-- Start with layout diagnostics: identify which ancestor establishes width and alignment constraints for this region.
-- Inspect active display modes (`flex`, `grid`, `block`) and verify whether child alignment rules are applied to the expected axis.
-- Measure spacing sources with computed styles and remove duplicated spacing coming from both parent gap and child margin.
-- Evaluate text wrapping and truncation by checking line-height, max-width, and overflow policies for headings and labels.
-- Check whether intrinsic sizing from long labels, icons, or controls is forcing container growth beyond expected width.
-- Validate visual hierarchy: heading vs body text sizes, emphasis levels, and spacing between grouped content.
-- Review layer order and clipping behavior where overlays, sticky bars, or positioned children appear near each other.
-- Apply the minimum scoped fix first, then retest at nearby viewport widths for regressions.
-- Prefer maintainable fixes: semantic wrappers, token-based spacing, and removal of hard-coded pixel offsets where possible.
-- Document before/after behavior in concise terms so the change is easy to review.
-
-Verification Checklist
-- Confirm no element overlap and no accidental clipping in the selected region.
-- Confirm text remains fully readable and baseline alignment is consistent.
-- Confirm controls keep consistent heights, padding, and focus ring visibility.
-- Confirm no horizontal scroll appears at this viewport.
-- Confirm nearby components outside the selected region are visually unchanged.
-- Confirm behavior under reduced width remains stable (simple responsive sanity pass).
-- Confirm z-index changes do not create new layering regressions.
-
-Expected Output From Coding Agent
-- A short root-cause explanation tied to specific DOM/CSS constraints.
-- A minimal patch touching only necessary files/components.
-- Acceptance criteria checklist with pass/fail notes.
-- Any follow-up refactor suggestions separated from the core fix.
-""".strip()
-
-    details = ensure_min_words(details, 800, DEBUG_CHECKLIST)
-    return trim_to_max_words(details, 1200)
+    # ui_bug
+    verbose = (
+        f"{short}\n\n"
+        f"Affected elements: {element_names}.\n"
+        f"Suspected causes:\n{issues_block}\n\n"
+        f"What to check:\n"
+        f"- Inspect flex/grid axis settings, gap usage, and container constraints.\n"
+        f"- Check box-sizing, min/max constraints, and nested width calculations.\n"
+        f"- Audit overflow and text-wrapping behavior.\n"
+        f"- Test at adjacent viewport widths after the fix."
+    )
+    return verbose.strip()
 
 
-LOW_QUALITY_SIGNALS = [
-    "unable to",
-    "cannot determine",
-    "no visible",
-    "image is blank",
-    "cannot analyze",
-    "i'm sorry",
-    "i cannot",
-]
+# --- Quality guards ---
 
-MINIMUM_SUMMARY_WORD_COUNT = 8
-MINIMUM_PROMPT_WORD_COUNT = 50
+LOW_QUALITY_SIGNALS = (
+    "unable to", "cannot determine", "no visible", "image is blank",
+    "cannot analyze", "i'm sorry", "i cannot", "i can't",
+)
+MINIMUM_CAPTION_WORDS = 8
+
+
+def word_count(text: str) -> int:
+    return len([p for p in text.split() if p.strip()])
 
 
 def is_low_quality_caption(caption: str) -> bool:
     if not caption or not caption.strip():
         return True
-    if word_count(caption) < MINIMUM_SUMMARY_WORD_COUNT:
+    if word_count(caption) < MINIMUM_CAPTION_WORDS:
         return True
     lowered = caption.lower()
     return any(signal in lowered for signal in LOW_QUALITY_SIGNALS)
 
 
-def enrich_weak_summary(summary: str, viewport_width: int, viewport_height: int) -> str:
-    base = summary.strip() if summary.strip() else "A UI region was captured for analysis."
-    enrichment = (
-        f" The captured area is from a {viewport_width}x{viewport_height} viewport. "
-        "Inspect the region for common layout issues: alignment inconsistencies between sibling elements, "
-        "spacing irregularities in padding or margins, text overflow or truncation, "
-        "and z-index stacking conflicts. Check for button/input sizing consistency and "
-        "typography hierarchy (heading vs body text scale)."
+def enrich_weak_caption(viewport_width: int, viewport_height: int) -> str:
+    return (
+        f"A UI region captured from a {viewport_width}x{viewport_height} viewport. "
+        "Inspect for alignment inconsistencies between sibling elements, spacing irregularities, "
+        "text overflow or truncation, and z-index stacking conflicts."
     )
-    return base + enrichment
 
 
-def validate_prompt_quality(prompt: str, min_words: int = MINIMUM_PROMPT_WORD_COUNT) -> bool:
-    if not prompt or not prompt.strip():
-        return False
-    return word_count(prompt) >= min_words
+def summarize_caption(caption: str) -> str:
+    cleaned = " ".join(caption.replace("\n", " ").split())
+    if not cleaned:
+        return "The selected region contains web UI controls and text content."
+    parts = cleaned.split(".")
+    short = ". ".join(p.strip() for p in parts if p.strip())[:620].strip()
+    return short if short.endswith(".") else short + "."
 
+
+# --- Public API ---
 
 def build_prompts(
     mode: PromptMode,
@@ -337,12 +314,10 @@ def build_prompts(
     viewport_height: int,
     caption: str,
 ) -> tuple[str, str, str, list[DetectedElement], list[str]]:
-    low_quality = is_low_quality_caption(caption)
+    if is_low_quality_caption(caption):
+        caption = enrich_weak_caption(viewport_width, viewport_height)
+
     summary = summarize_caption(caption)
-
-    if low_quality:
-        summary = enrich_weak_summary(summary, viewport_width, viewport_height)
-
     elements = detect_elements(summary)
     issues = infer_issues(summary, elements)
 
@@ -351,7 +326,7 @@ def build_prompts(
         page_url=page_url,
         viewport_width=viewport_width,
         viewport_height=viewport_height,
-        summary=summary,
+        caption=caption,
         elements=elements,
         issues=issues,
     )
@@ -360,31 +335,9 @@ def build_prompts(
         page_url=page_url,
         viewport_width=viewport_width,
         viewport_height=viewport_height,
-        summary=summary,
+        caption=caption,
         elements=elements,
         issues=issues,
     )
-
-    if not validate_prompt_quality(prompt_short):
-        prompt_short = build_short_prompt(
-            mode=mode,
-            page_url=page_url,
-            viewport_width=viewport_width,
-            viewport_height=viewport_height,
-            summary=enrich_weak_summary("", viewport_width, viewport_height),
-            elements=elements,
-            issues=issues,
-        )
-
-    if not validate_prompt_quality(prompt_verbose):
-        prompt_verbose = build_verbose_prompt(
-            mode=mode,
-            page_url=page_url,
-            viewport_width=viewport_width,
-            viewport_height=viewport_height,
-            summary=enrich_weak_summary("", viewport_width, viewport_height),
-            elements=elements,
-            issues=issues,
-        )
 
     return summary, prompt_short, prompt_verbose, elements, issues

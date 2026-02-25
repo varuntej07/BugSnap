@@ -1,12 +1,10 @@
 import { describeSelection, BugSnapApiError } from "@shared/httpClient";
-import { buildStructuredPrompt } from "@shared/promptTemplates";
 import {
   DEFAULT_SETTINGS,
   STORAGE_KEYS,
   type CaptureFailedMessage,
   type CropRect,
   type ExtensionSettings,
-  type OverlayCancelMessage,
   type OverlaySelectionMessage,
   type PendingCapture,
   type PersistedResult,
@@ -51,10 +49,7 @@ let pendingScreenshot: {
 async function getSettings(): Promise<ExtensionSettings> {
   const stored = await chrome.storage.local.get(STORAGE_KEYS.settings);
   const raw = (stored[STORAGE_KEYS.settings] as Partial<ExtensionSettings> | undefined) ?? {};
-  return {
-    ...DEFAULT_SETTINGS,
-    ...raw
-  };
+  return { ...DEFAULT_SETTINGS, ...raw };
 }
 
 async function storeError(error: string): Promise<void> {
@@ -283,27 +278,12 @@ async function handleOverlaySelection(
       summary_preview: serverResponse.ui_summary?.slice(0, 120),
     });
 
-    const fallbackPrompt = buildStructuredPrompt({
-      pageUrl,
-      viewport,
-      mode,
-      uiSummary: serverResponse.ui_summary,
-      detectedElements: serverResponse.detected_elements,
-      suspectedIssues: serverResponse.suspected_issues,
-    });
-
-    const response = {
-      ...serverResponse,
-      prompt_short: serverResponse.prompt_short?.trim() ? serverResponse.prompt_short : fallbackPrompt,
-      prompt_verbose: serverResponse.prompt_verbose?.trim() ? serverResponse.prompt_verbose : fallbackPrompt,
-    };
-
     const persistedResult: PersistedResult = {
       created_at: new Date().toISOString(),
       page_url: pageUrl,
       viewport,
       mode,
-      response,
+      response: serverResponse,
     };
 
     await persistResult(persistedResult);
