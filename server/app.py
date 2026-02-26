@@ -23,7 +23,7 @@ from vlm import InferenceConfig, VisionLanguageBackend, load_backend
 
 LOGGER = logging.getLogger("bugsnap.server")
 
-PromptMode = Literal["ui_bug_fix", "ui_polish", "implement_like_this"]
+PromptMode = Literal["fix_this", "build_this"]
 ElementType = Literal["button", "input", "modal", "nav", "card", "table", "text"]
 
 # --- Error codes ---
@@ -330,7 +330,7 @@ async def describe(
     request: Request,
     image: UploadFile | None = File(default=None),
     image_base64: str | None = Form(default=None),
-    mode: PromptMode = Form(default="ui_bug_fix"),
+    mode: PromptMode = Form(default="fix_this"),
     page_url: str | None = Form(default=None),
     viewport_width: int = Form(default=0),
     viewport_height: int = Form(default=0),
