@@ -24,10 +24,9 @@ Instead of describing bugs from memory, you select the exact UI region, run anal
 - Fallback Capture Studio tab when content script injection is blocked
 - OpenAI GPT-4o Vision backend for high-quality UI analysis
 - Structured server response with UI summary, elements, issues, and prompts
-- Multiple prompt modes:
-  - `ui_bug_fix` - fix layout and visual bugs
-  - `ui_polish` - improve spacing, hierarchy, and visual consistency
-  - `implement_like_this` - recreate the selected region as a design reference
+- Two prompt modes:
+  - `fix_this` - describe and fix a bug, error, or layout issue
+  - `build_this` - implement a component from a reference design
 - Production error contract with structured error codes and retryable flags
 - Request rate limiting and payload guards
 - Degraded mode detection with visible UI indicators
@@ -65,7 +64,6 @@ BugSnap/
     popup/index.html
     shared/httpClient.ts
     shared/imageCrop.ts
-    shared/promptTemplates.ts
     shared/types.ts
     public/manifest.json
     scripts/                  # Preflight and smoke test scripts
@@ -106,7 +104,7 @@ npm run build
 4. Wait for analysis to complete
 5. Open popup and copy the generated prompt
 
-The extension connects to the hosted backend at `https://bugsnap.vercel.app` by default. No local server setup is needed.
+The extension connects to the hosted backend at `https://bug-snap-2kgx.vercel.app` by default. No local server setup is needed.
 
 ## Deploying the Backend
 
@@ -145,7 +143,7 @@ Returns service status, active backend name, and degraded flag.
 Input fields:
 
 - `image` (multipart file) or `image_base64`
-- `mode`: `ui_bug_fix | ui_polish | implement_like_this`
+- `mode`: `fix_this | build_this`
 - `page_url` (optional)
 - `viewport_width`
 - `viewport_height`

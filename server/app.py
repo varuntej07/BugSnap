@@ -203,7 +203,7 @@ def make_error_response(
 
 app = FastAPI(
     title="BugSnap VLM Server",
-    version="0.2.0",
+    version="0.3.0",
     description="Describes selected UI screenshot regions and generates structured prompts for coding agents.",
 )
 
@@ -276,17 +276,6 @@ async def request_size_guard(request: Request, call_next):
             LOGGER.warning("Invalid content-length header: %r", content_length)
 
     return await call_next(request)
-
-
-async def verify_auth(request: Request) -> None:
-    if not AUTH_TOKEN:
-        return
-    auth_header = request.headers.get("authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Authorization header required.")
-    token = auth_header[7:].strip()
-    if token != AUTH_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid authorization token.")
 
 
 async def enforce_rate_limit(request: Request) -> None:
