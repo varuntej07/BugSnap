@@ -281,7 +281,7 @@ export function Capture() {
 
       setResult(persistedResult);
       setStatus(
-        response.degraded
+        serverResponse.degraded
           ? "Prompt generated (degraded mode - quality may be reduced). Copy it from below."
           : "Prompt generated. Copy it from below."
       );
